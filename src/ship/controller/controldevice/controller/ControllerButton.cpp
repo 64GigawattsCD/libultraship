@@ -13,8 +13,63 @@
 #include "ship/Context.h"
 #include "ship/window/Window.h"
 #include "ship/controller/controldeck/ControlDeck.h"
+#include "libultraship/libultra/controller.h"
 
 namespace Ship {
+namespace {
+std::string GetLegacyConfigNameFromBitmask(CONTROLLERBUTTONS_T bitmask) {
+    if (bitmask == BTN_A) {
+        return "A";
+    }
+    if (bitmask == BTN_B) {
+        return "B";
+    }
+    if (bitmask == BTN_L) {
+        return "L";
+    }
+    if (bitmask == BTN_R) {
+        return "R";
+    }
+    if (bitmask == BTN_Z) {
+        return "Z";
+    }
+    if (bitmask == BTN_START) {
+        return "Start";
+    }
+    if (bitmask == BTN_CLEFT) {
+        return "CLeft";
+    }
+    if (bitmask == BTN_CRIGHT) {
+        return "CRight";
+    }
+    if (bitmask == BTN_CUP) {
+        return "CUp";
+    }
+    if (bitmask == BTN_CDOWN) {
+        return "CDown";
+    }
+    if (bitmask == BTN_DLEFT) {
+        return "DLeft";
+    }
+    if (bitmask == BTN_DRIGHT) {
+        return "DRight";
+    }
+    if (bitmask == BTN_DUP) {
+        return "DUp";
+    }
+    if (bitmask == BTN_DDOWN) {
+        return "DDown";
+    }
+
+    return "";
+}
+
+std::string GetButtonMappingIdsCvarKey(uint8_t portIndex, const std::string& configName) {
+    return StringHelper::Sprintf(CVAR_PREFIX_CONTROLLERS ".Port%d.Buttons.%sButtonMappingIds", portIndex + 1,
+                                 configName.c_str());
+}
+} // namespace
+
 ControllerButton::ControllerButton(uint8_t portIndex, CONTROLLERBUTTONS_T bitmask)
     : mPortIndex(portIndex), mBitmask(bitmask), mUseEventInputToCreateNewMapping(false),
       mKeyboardScancodeForNewMapping(LUS_KB_UNKNOWN), mMouseButtonForNewMapping(LUS_MOUSE_BTN_UNKNOWN) {
@@ -76,14 +131,17 @@ void ControllerButton::SaveButtonMappingIdsToConfig() {
         buttonMappingIdListString += ",";
     }
 
-    const std::string buttonMappingIdsCvarKey =
-        StringHelper::Sprintf(CVAR_PREFIX_CONTROLLERS ".Port%d.Buttons.%sButtonMappingIds", mPortIndex + 1,
-                              GetConfigNameFromBitmask(mBitmask).c_str());
+    const std::string buttonMappingIdsCvarKey = GetButtonMappingIdsCvarKey(mPortIndex, GetConfigNameFromBitmask(mBitmask));
+    const std::string legacyButtonMappingIdsCvarKey =
+        GetButtonMappingIdsCvarKey(mPortIndex, GetLegacyConfigNameFromBitmask(mBitmask));
     if (buttonMappingIdListString == "") {
         Ship::Context::GetInstance()->GetConsoleVariables()->ClearVariable(buttonMappingIdsCvarKey.c_str());
     } else {
         Ship::Context::GetInstance()->GetConsoleVariables()->SetString(buttonMappingIdsCvarKey.c_str(),
                                                                        buttonMappingIdListString.c_str());
+    }
+    if (!legacyButtonMappingIdsCvarKey.empty()) {
+        Ship::Context::GetInstance()->GetConsoleVariables()->ClearVariable(legacyButtonMappingIdsCvarKey.c_str());
     }
 
     Ship::Context::GetInstance()->GetConsoleVariables()->Save();
@@ -97,11 +155,17 @@ void ControllerButton::ReloadAllMappingsFromConfig() {
     // for each controller (especially compared to include/exclude locations in rando), and
     // the audio editor pattern doesn't work for this because that looks for ids that are either
     // hardcoded or provided by an otr file
-    const std::string buttonMappingIdsCvarKey =
-        StringHelper::Sprintf(CVAR_PREFIX_CONTROLLERS ".Port%d.Buttons.%sButtonMappingIds", mPortIndex + 1,
-                              GetConfigNameFromBitmask(mBitmask).c_str());
-    std::stringstream buttonMappingIdsStringStream(
-        Ship::Context::GetInstance()->GetConsoleVariables()->GetString(buttonMappingIdsCvarKey.c_str(), ""));
+    const std::string buttonMappingIdsCvarKey = GetButtonMappingIdsCvarKey(mPortIndex, GetConfigNameFromBitmask(mBitmask));
+    std::string buttonMappingIdsString =
+        Ship::Context::GetInstance()->GetConsoleVariables()->GetString(buttonMappingIdsCvarKey.c_str(), "");
+    if (buttonMappingIdsString.empty()) {
+        const std::string legacyConfigName = GetLegacyConfigNameFromBitmask(mBitmask);
+        if (!legacyConfigName.empty()) {
+            buttonMappingIdsString = Ship::Context::GetInstance()->GetConsoleVariables()->GetString(
+                GetButtonMappingIdsCvarKey(mPortIndex, legacyConfigName).c_str(), "");
+        }
+    }
+    std::stringstream buttonMappingIdsStringStream(buttonMappingIdsString);
     std::string buttonMappingIdString;
     while (getline(buttonMappingIdsStringStream, buttonMappingIdString, ',')) {
         LoadButtonMappingFromConfig(buttonMappingIdString);

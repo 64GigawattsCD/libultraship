@@ -1246,35 +1246,34 @@ void InputEditorWindow::DrawPortTab(uint8_t portIndex) {
         ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
 
-        if (ImGui::CollapsingHeader("Buttons", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {
-            DrawButtonLine("A", portIndex, BTN_A, CHIP_COLOR_N64_BLUE);
-            DrawButtonLine("B", portIndex, BTN_B, CHIP_COLOR_N64_GREEN);
-            DrawButtonLine("Start", portIndex, BTN_START, CHIP_COLOR_N64_RED);
-            DrawButtonLine("L", portIndex, BTN_L);
-            DrawButtonLine("R", portIndex, BTN_R);
-            DrawButtonLine("Z", portIndex, BTN_Z);
-            DrawButtonLine(StringHelper::Sprintf("C %s", ICON_FA_ARROW_UP).c_str(), portIndex, BTN_CUP,
-                           CHIP_COLOR_N64_YELLOW);
-            DrawButtonLine(StringHelper::Sprintf("C %s", ICON_FA_ARROW_DOWN).c_str(), portIndex, BTN_CDOWN,
-                           CHIP_COLOR_N64_YELLOW);
-            DrawButtonLine(StringHelper::Sprintf("C %s", ICON_FA_ARROW_LEFT).c_str(), portIndex, BTN_CLEFT,
-                           CHIP_COLOR_N64_YELLOW);
-            DrawButtonLine(StringHelper::Sprintf("C %s", ICON_FA_ARROW_RIGHT).c_str(), portIndex, BTN_CRIGHT,
-                           CHIP_COLOR_N64_YELLOW);
+        if (ImGui::CollapsingHeader("Shared Actions", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {
+            DrawButtonLine("Menu Yes / Accelerate", portIndex, BTN_A, CHIP_COLOR_N64_BLUE);
+            DrawButtonLine("Menu No / Brake-Reverse", portIndex, BTN_B, CHIP_COLOR_N64_GREEN);
+            DrawButtonLine("Menu Pause / Race Pause", portIndex, BTN_START, CHIP_COLOR_N64_RED);
         }
 
-        if (ImGui::CollapsingHeader("D-Pad", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {
-            DrawButtonLine(StringHelper::Sprintf("%s", ICON_FA_ARROW_UP).c_str(), portIndex, BTN_DUP);
-            DrawButtonLine(StringHelper::Sprintf("%s", ICON_FA_ARROW_DOWN).c_str(), portIndex, BTN_DDOWN);
-            DrawButtonLine(StringHelper::Sprintf("%s", ICON_FA_ARROW_LEFT).c_str(), portIndex, BTN_DLEFT);
-            DrawButtonLine(StringHelper::Sprintf("%s", ICON_FA_ARROW_RIGHT).c_str(), portIndex, BTN_DRIGHT);
+        if (ImGui::CollapsingHeader("Driving Actions", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {
+            DrawButtonLine("Left Shoulder", portIndex, BTN_L);
+            DrawButtonLine("Drift / Hop", portIndex, BTN_R);
+            DrawButtonLine("Use Item", portIndex, BTN_Z);
+            DrawButtonLine("Camera Up / Rear View", portIndex, BTN_CUP, CHIP_COLOR_N64_YELLOW);
+            DrawButtonLine("Camera Down", portIndex, BTN_CDOWN, CHIP_COLOR_N64_YELLOW);
+            DrawButtonLine("Camera Left", portIndex, BTN_CLEFT, CHIP_COLOR_N64_YELLOW);
+            DrawButtonLine("Camera Right", portIndex, BTN_CRIGHT, CHIP_COLOR_N64_YELLOW);
         }
 
-        if (ImGui::CollapsingHeader("Analog Stick", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::CollapsingHeader("Menu Navigation", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {
+            DrawButtonLine("Menu Up", portIndex, BTN_DUP);
+            DrawButtonLine("Menu Down", portIndex, BTN_DDOWN);
+            DrawButtonLine("Menu Left", portIndex, BTN_DLEFT);
+            DrawButtonLine("Menu Right", portIndex, BTN_DRIGHT);
+        }
+
+        if (ImGui::CollapsingHeader("Steering Axis", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {
             DrawStickSection(portIndex, LEFT, 0);
         }
 
-        if (ImGui::CollapsingHeader("Additional (\"Right\") Stick")) {
+        if (ImGui::CollapsingHeader("Camera Axis")) {
             DrawStickSection(portIndex, RIGHT, 1, CHIP_COLOR_N64_YELLOW);
         }
 
