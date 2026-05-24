@@ -10,13 +10,36 @@
 #endif
 #include <spdlog/spdlog.h>
 #include "ship/utils/StringHelper.h"
+#include "ship/controller/controldeck/ControlDeck.h"
 
 #define M_TAU 6.2831853071795864769252867665590057 // 2 * pi
 #define MINIMUM_RADIUS_TO_MAP_NOTCH 0.9
 
+#define MAX_SDL_AXIS_VALUE (float)INT16_MAX
+
 namespace LUS {
 Controller::Controller(uint8_t portIndex, std::vector<CONTROLLERBUTTONS_T> bitmasks)
     : Ship::Controller(portIndex, bitmasks) {
+}
+
+static float GetNormalizedTriggerValue(uint8_t portIndex, SDL_GameControllerAxis axis) {
+    float triggerValue = 0.0f;
+
+    if (Ship::Context::GetInstance()->GetControlDeck()->GamepadGameInputBlocked()) {
+        return triggerValue;
+    }
+
+    for (const auto& [instanceId, gamepad] : Ship::Context::GetInstance()
+                                                ->GetControlDeck()
+                                                ->GetConnectedPhysicalDeviceManager()
+                                                ->GetConnectedSDLGamepadsForPort(portIndex)) {
+        const auto axisValue = SDL_GameControllerGetAxis(gamepad, axis);
+        if (axisValue > 0) {
+            triggerValue = std::max(triggerValue, axisValue / MAX_SDL_AXIS_VALUE);
+        }
+    }
+
+    return triggerValue;
 }
 
 void Controller::ReadToPad(void* pad) {
@@ -38,6 +61,9 @@ void Controller::ReadToOSContPad(OSContPad* pad) {
     // Gyro
     GetGyro()->UpdatePad(padToBuffer.gyro_x, padToBuffer.gyro_y);
 
+    padToBuffer.left_trigger = GetNormalizedTriggerValue(GetPortIndex(), SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+    padToBuffer.right_trigger = GetNormalizedTriggerValue(GetPortIndex(), SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+
     mPadBuffer.push_front(padToBuffer);
     if (pad != nullptr) {
         auto& padFromBuffer = mPadBuffer[std::min(
@@ -58,6 +84,13 @@ void Controller::ReadToOSContPad(OSContPad* pad) {
         }
         if (pad->right_stick_y == 0) {
             pad->right_stick_y = padFromBuffer.right_stick_y;
+        }
+
+        if (pad->left_trigger == 0) {
+            pad->left_trigger = padFromBuffer.left_trigger;
+        }
+        if (pad->right_trigger == 0) {
+            pad->right_trigger = padFromBuffer.right_trigger;
         }
 
         if (pad->gyro_x == 0) {
