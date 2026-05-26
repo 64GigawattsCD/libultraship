@@ -5,8 +5,11 @@
 #include "ship/config/ConsoleVariable.h"
 #include "ship/Context.h"
 #include "ship/controller/controldeck/ControlDeck.h"
+#include <cmath>
 
 #define MAX_SDL_RANGE (float)INT16_MAX
+#define KART_CONTROLLER_SLOPE_STEERING_FORCE_CVAR "gArcadeKart.ControllerSlopeSteeringForce"
+#define KART_MAX_SLOPE_STEERING_EXPONENT 3.0f
 
 namespace Ship {
 SDLAxisDirectionToAxisDirectionMapping::SDLAxisDirectionToAxisDirectionMapping(uint8_t portIndex, StickIndex stickIndex,
@@ -16,6 +19,26 @@ SDLAxisDirectionToAxisDirectionMapping::SDLAxisDirectionToAxisDirectionMapping(u
     : ControllerInputMapping(PhysicalDeviceType::SDLGamepad),
       ControllerAxisDirectionMapping(PhysicalDeviceType::SDLGamepad, portIndex, stickIndex, direction),
       SDLAxisDirectionToAnyMapping(sdlControllerAxis, axisDirection) {
+}
+
+static float ApplySlopeSteeringResistance(float axisDirectionValue, StickIndex stickIndex, Direction direction) {
+    if (stickIndex != LEFT_STICK || (direction != LEFT && direction != RIGHT)) {
+        return axisDirectionValue;
+    }
+
+    float slopeSteeringForce =
+        Context::GetInstance()->GetConsoleVariables()->GetFloat(KART_CONTROLLER_SLOPE_STEERING_FORCE_CVAR, 0.0f);
+    bool isFightingSlope = (slopeSteeringForce > 0.0f && direction == LEFT) ||
+                           (slopeSteeringForce < 0.0f && direction == RIGHT);
+    if (!isFightingSlope) {
+        return axisDirectionValue;
+    }
+
+    float slopeResistance = std::clamp(fabs(slopeSteeringForce) / 0.75f, 0.0f, 1.0f);
+    float tuningExponent = 1.0f + (slopeResistance * (KART_MAX_SLOPE_STEERING_EXPONENT - 1.0f));
+    float normalizedInput = std::clamp(axisDirectionValue / MAX_AXIS_RANGE, 0.0f, 1.0f);
+    float tunedInput = powf(normalizedInput, tuningExponent);
+    return tunedInput * MAX_AXIS_RANGE;
 }
 
 float SDLAxisDirectionToAxisDirectionMapping::GetNormalizedAxisDirectionValue() {
@@ -37,7 +60,8 @@ float SDLAxisDirectionToAxisDirectionMapping::GetNormalizedAxisDirectionValue() 
 
         // scale {-32768 ... +32767} to {-MAX_AXIS_RANGE ... +MAX_AXIS_RANGE}
         // and use the absolute value of it
-        normalizedValues.push_back(fabs(axisValue * MAX_AXIS_RANGE / MAX_SDL_RANGE));
+        normalizedValues.push_back(
+            ApplySlopeSteeringResistance(fabs(axisValue * MAX_AXIS_RANGE / MAX_SDL_RANGE), mStickIndex, mDirection));
     }
 
     if (normalizedValues.size() == 0) {

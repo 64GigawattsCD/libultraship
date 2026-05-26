@@ -29,7 +29,7 @@ class ControllerButton {
 
     bool AddOrEditButtonMappingFromRawPress(CONTROLLERBUTTONS_T bitmask, std::string id);
 
-    void UpdatePad(CONTROLLERBUTTONS_T& padButtons);
+    void UpdatePad(CONTROLLERBUTTONS_T& padButtons, float* buttonValues);
 
     bool ProcessKeyboardEvent(KbEventType eventType, KbScancode scancode);
     bool ProcessMouseButtonEvent(bool isPressed, Ship::MouseBtn button);

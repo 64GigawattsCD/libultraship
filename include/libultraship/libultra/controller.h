@@ -57,8 +57,10 @@
 #define PFS_ERR_NOPACK 1
 
 #ifndef CONTROLLERBUTTONS_T
-#define CONTROLLERBUTTONS_T uint16_t
+#define CONTROLLERBUTTONS_T uint32_t
 #endif
+
+#define CONTROLLER_BUTTON_VALUE_COUNT 32
 
 /* Buttons */
 #define BTN_CRIGHT 0x00001
@@ -106,6 +108,7 @@ typedef struct {
     /* 0x11 */ float right_trigger;
     /* 0x1C */ int8_t right_stick_x;
     /* 0x20 */ int8_t right_stick_y;
+    /* 0x21 */ float button_value[CONTROLLER_BUTTON_VALUE_COUNT];
 } OSContPad; // size = 0x24
 
 typedef struct {

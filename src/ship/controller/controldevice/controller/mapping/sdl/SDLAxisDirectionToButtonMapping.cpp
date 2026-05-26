@@ -6,6 +6,8 @@
 #include "ship/Context.h"
 #include "ship/controller/controldeck/ControlDeck.h"
 
+#define MAX_SDL_AXIS_VALUE (float)INT16_MAX
+
 namespace Ship {
 SDLAxisDirectionToButtonMapping::SDLAxisDirectionToButtonMapping(uint8_t portIndex, CONTROLLERBUTTONS_T bitmask,
                                                                  int32_t sdlControllerAxis, int32_t axisDirection)
@@ -15,11 +17,8 @@ SDLAxisDirectionToButtonMapping::SDLAxisDirectionToButtonMapping(uint8_t portInd
 }
 
 void SDLAxisDirectionToButtonMapping::UpdatePad(CONTROLLERBUTTONS_T& padButtons) {
-    if (Context::GetInstance()->GetControlDeck()->GamepadGameInputBlocked()) {
-        return;
-    }
-
     int32_t axisThresholdPercentage = 25;
+
     if (AxisIsStick()) {
         axisThresholdPercentage = Ship::Context::GetInstance()
                                       ->GetControlDeck()
@@ -32,17 +31,34 @@ void SDLAxisDirectionToButtonMapping::UpdatePad(CONTROLLERBUTTONS_T& padButtons)
                                       ->GetTriggerAxisThresholdPercentage();
     }
 
+    if (GetNormalizedButtonValue() > (axisThresholdPercentage / 100.0f)) {
+        padButtons |= mBitmask;
+    }
+}
+
+float SDLAxisDirectionToButtonMapping::GetNormalizedButtonValue() {
+    float buttonValue = 0.0f;
+
+    if (Context::GetInstance()->GetControlDeck()->GamepadGameInputBlocked()) {
+        return buttonValue;
+    }
+
     for (const auto& [instanceId, gamepad] :
          Context::GetInstance()->GetControlDeck()->GetConnectedPhysicalDeviceManager()->GetConnectedSDLGamepadsForPort(
              mPortIndex)) {
         const auto axisValue = SDL_GameControllerGetAxis(gamepad, mControllerAxis);
 
-        auto axisMinValue = SDL_JOYSTICK_AXIS_MAX * (axisThresholdPercentage / 100.0f);
-        if ((mAxisDirection == POSITIVE && axisValue > axisMinValue) ||
-            (mAxisDirection == NEGATIVE && axisValue < -axisMinValue)) {
-            padButtons |= mBitmask;
+        if ((mAxisDirection == POSITIVE && axisValue <= 0) || (mAxisDirection == NEGATIVE && axisValue >= 0)) {
+            continue;
         }
+
+        buttonValue = std::max(buttonValue, fabs(axisValue / MAX_SDL_AXIS_VALUE));
     }
+
+    if (buttonValue > 1.0f) {
+        return 1.0f;
+    }
+    return buttonValue;
 }
 
 int8_t SDLAxisDirectionToButtonMapping::GetMappingType() {

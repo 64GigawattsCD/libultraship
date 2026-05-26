@@ -14,6 +14,10 @@
 #include "ship/window/Window.h"
 #include "ship/controller/controldeck/ControlDeck.h"
 
+#ifndef CONTROLLER_BUTTON_VALUE_COUNT
+#define CONTROLLER_BUTTON_VALUE_COUNT 32
+#endif
+
 namespace Ship {
 ControllerButton::ControllerButton(uint8_t portIndex, CONTROLLERBUTTONS_T bitmask)
     : mPortIndex(portIndex), mBitmask(bitmask), mUseEventInputToCreateNewMapping(false),
@@ -134,9 +138,26 @@ void ControllerButton::ClearAllButtonMappingsForDeviceType(PhysicalDeviceType ph
     SaveButtonMappingIdsToConfig();
 }
 
-void ControllerButton::UpdatePad(CONTROLLERBUTTONS_T& padButtons) {
+static int32_t GetButtonValueIndex(CONTROLLERBUTTONS_T bitmask) {
+    for (int32_t i = 0; i < CONTROLLER_BUTTON_VALUE_COUNT; i++) {
+        if (bitmask == (CONTROLLERBUTTONS_T)(1u << i)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void ControllerButton::UpdatePad(CONTROLLERBUTTONS_T& padButtons, float* buttonValues) {
+    int32_t buttonValueIndex = GetButtonValueIndex(mBitmask);
+
     for (const auto& [id, mapping] : mButtonMappings) {
-        mapping->UpdatePad(padButtons);
+        CONTROLLERBUTTONS_T mappingButtons = 0;
+        mapping->UpdatePad(mappingButtons);
+        padButtons |= mappingButtons;
+
+        if ((buttonValues != nullptr) && (buttonValueIndex >= 0) && ((mappingButtons & mBitmask) != 0)) {
+            buttonValues[buttonValueIndex] = std::max(buttonValues[buttonValueIndex], mapping->GetNormalizedButtonValue());
+        }
     }
 }
 

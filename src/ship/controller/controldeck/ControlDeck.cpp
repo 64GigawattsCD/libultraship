@@ -16,6 +16,7 @@ ControlDeck::ControlDeck(std::vector<CONTROLLERBUTTONS_T> additionalBitmasks,
     mGlobalSDLDeviceSettings = std::make_shared<GlobalSDLDeviceSettings>();
     mControllerDefaultMappings = controllerDefaultMappings == nullptr ? std::make_shared<ControllerDefaultMappings>()
                                                                       : controllerDefaultMappings;
+    mButtonNames = buttonNames;
 }
 
 ControlDeck::~ControlDeck() {

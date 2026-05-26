@@ -618,13 +618,13 @@ void InputEditorWindow::DrawStickSection(uint8_t port, uint8_t stick, int32_t id
 
     ImGui::SameLine();
     ImGui::BeginGroup();
-    DrawStickDirectionLine(ICON_FA_ARROW_UP, port, stick, UP, color);
-    DrawStickDirectionLine(ICON_FA_ARROW_DOWN, port, stick, DOWN, color);
+    DrawStickDirectionLine(stick == LEFT ? "F" : ICON_FA_ARROW_UP, port, stick, UP, color);
+    DrawStickDirectionLine(stick == LEFT ? "B" : ICON_FA_ARROW_DOWN, port, stick, DOWN, color);
     DrawStickDirectionLine(ICON_FA_ARROW_LEFT, port, stick, LEFT, color);
     DrawStickDirectionLine(ICON_FA_ARROW_RIGHT, port, stick, RIGHT, color);
     ImGui::EndGroup();
     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-    if (ImGui::TreeNode(StringHelper::Sprintf("Analog Stick Options##%d", id).c_str())) {
+    if (ImGui::TreeNode(StringHelper::Sprintf("%s Options##%d", stick == LEFT ? "Steering / Forward Back" : "Analog Stick", id).c_str())) {
         ImGui::Text("Sensitivity:");
 
         int32_t sensitivityPercentage = controllerStick->GetSensitivityPercentage();
@@ -1270,7 +1270,32 @@ void InputEditorWindow::DrawPortTab(uint8_t portIndex) {
             DrawButtonLine(StringHelper::Sprintf("%s", ICON_FA_ARROW_RIGHT).c_str(), portIndex, BTN_DRIGHT);
         }
 
-        if (ImGui::CollapsingHeader("Analog Stick", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::CollapsingHeader("Game Commands", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {
+            for (const auto& [bitmask, name] : Context::GetInstance()->GetControlDeck()->GetAllButtonNames()) {
+                switch (bitmask) {
+                    case BTN_A:
+                    case BTN_B:
+                    case BTN_START:
+                    case BTN_L:
+                    case BTN_R:
+                    case BTN_Z:
+                    case BTN_CUP:
+                    case BTN_CDOWN:
+                    case BTN_CLEFT:
+                    case BTN_CRIGHT:
+                    case BTN_DUP:
+                    case BTN_DDOWN:
+                    case BTN_DLEFT:
+                    case BTN_DRIGHT:
+                        continue;
+                    default:
+                        DrawButtonLine(name.c_str(), portIndex, bitmask);
+                        break;
+                }
+            }
+        }
+
+        if (ImGui::CollapsingHeader("Steering", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {
             DrawStickSection(portIndex, LEFT, 0);
         }
 

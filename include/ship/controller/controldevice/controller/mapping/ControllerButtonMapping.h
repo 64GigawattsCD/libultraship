@@ -8,7 +8,7 @@
 namespace Ship {
 
 #ifndef CONTROLLERBUTTONS_T
-#define CONTROLLERBUTTONS_T uint16_t
+#define CONTROLLERBUTTONS_T uint32_t
 #endif
 
 class ControllerButtonMapping : virtual public ControllerInputMapping {
@@ -20,6 +20,7 @@ class ControllerButtonMapping : virtual public ControllerInputMapping {
 
     CONTROLLERBUTTONS_T GetBitmask();
     virtual void UpdatePad(CONTROLLERBUTTONS_T& padButtons) = 0;
+    virtual float GetNormalizedButtonValue();
     virtual int8_t GetMappingType();
     void SetPortIndex(uint8_t portIndex);
 
