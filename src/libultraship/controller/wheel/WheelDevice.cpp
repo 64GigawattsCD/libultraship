@@ -619,6 +619,9 @@ WheelReading WheelDevice::Read() {
     reading.menuConfirm = ReadButton(mDefinition.menuConfirmButton);
     reading.menuCancel = ReadButton(mDefinition.menuCancelButton);
     reading.openMenu = ReadButton(mDefinition.openMenuButton);
+    reading.jump = ReadButton(mDefinition.jumpButton) || ReadButton(mDefinition.alternateJumpButton);
+    reading.toggleHud = ReadButton(mDefinition.toggleHudButton);
+    reading.toggleMusic = ReadButton(mDefinition.toggleMusicButton);
     reading.useItemBackward = ReadButton(mDefinition.useItemBackwardButton);
     reading.useItemForward = ReadButton(mDefinition.useItemForwardButton);
 
@@ -655,12 +658,12 @@ WheelDeviceManager& WheelDeviceManager::Instance() {
 
 WheelDeviceManager::WheelDeviceManager()
     : mDevices({
-          WheelDevice({ "G27 Racing Wheel", 0x046D, 0xC294, 0, 1, 2, 4, -1, true, true, true, 0, 0, 1, 3, 5, 4, 8, 9,
-                        10, 11, 12, 13, 14 }),
-          WheelDevice({ "G27 Racing Wheel", 0x046D, 0xC29B, 0, 1, 2, 4, -1, true, true, true, 0, 0, 1, 3, 5, 4, 8, 9,
-                        10, 11, 12, 13, 14 }),
+          WheelDevice({ "G27 Racing Wheel", 0x046D, 0xC294, 0, 1, 2, 4, -1, true, true, true, 0, 0, 1, 3, 6, 7, 2,
+                        20, 5, 4, 8, 9, 10, 11, 12, 13, 14 }),
+          WheelDevice({ "G27 Racing Wheel", 0x046D, 0xC29B, 0, 1, 2, 4, -1, true, true, true, 0, 0, 1, 3, 6, 7, 2,
+                        20, 5, 4, 8, 9, 10, 11, 12, 13, 14 }),
           WheelDevice({ "ODDOR-HANDBRAKE", 0x1021, 0x1888, -1, -1, -1, -1, 0, false, false, false, -1, -1, -1, -1,
-                        -1, -1, -1, -1, -1, -1, -1, -1, -1 }),
+                        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 }),
       }),
       mLastJoystickCount(-1) {
 }
@@ -703,6 +706,9 @@ WheelReading WheelDeviceManager::ReadPlayerOneWheel() {
         mergedReading.menuConfirm = mergedReading.menuConfirm || reading.menuConfirm;
         mergedReading.menuCancel = mergedReading.menuCancel || reading.menuCancel;
         mergedReading.openMenu = mergedReading.openMenu || reading.openMenu;
+        mergedReading.jump = mergedReading.jump || reading.jump;
+        mergedReading.toggleHud = mergedReading.toggleHud || reading.toggleHud;
+        mergedReading.toggleMusic = mergedReading.toggleMusic || reading.toggleMusic;
         mergedReading.useItemBackward = mergedReading.useItemBackward || reading.useItemBackward;
         mergedReading.useItemForward = mergedReading.useItemForward || reading.useItemForward;
         if (reading.requestedGear != WHEEL_GEAR_NONE) {

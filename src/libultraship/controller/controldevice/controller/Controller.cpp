@@ -30,6 +30,7 @@
 #define KART_SHIFT_NEUTRAL_BUTTON 0x01000000
 #define KART_USE_ITEM_FORWARD_BUTTON 0x02000000
 #define KART_USE_ITEM_BACKWARD_BUTTON 0x04000000
+#define KART_TOGGLE_MUSIC_BUTTON 0x08000000
 #define KART_DRIFT_BUTTON_VALUE_INDEX 4
 #define WHEEL_STICK_RANGE 85.0f
 #define WHEEL_HANDBRAKE_THRESHOLD 0.25f
@@ -107,6 +108,15 @@ static void ApplyWheelReading(OSContPad& pad, const WheelReading& reading) {
     }
     if (reading.openMenu) {
         pad.button |= BTN_START;
+    }
+    if (reading.jump) {
+        pad.button |= BTN_L;
+    }
+    if (reading.toggleHud) {
+        pad.button |= BTN_CRIGHT;
+    }
+    if (reading.toggleMusic) {
+        pad.button |= KART_TOGGLE_MUSIC_BUTTON;
     }
     if (reading.useItemBackward) {
         pad.button |= KART_USE_ITEM_BACKWARD_BUTTON;

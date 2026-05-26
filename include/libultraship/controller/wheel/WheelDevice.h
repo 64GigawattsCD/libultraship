@@ -23,6 +23,10 @@ struct WheelDeviceDefinition {
     int32_t menuConfirmButton;
     int32_t menuCancelButton;
     int32_t openMenuButton;
+    int32_t jumpButton;
+    int32_t alternateJumpButton;
+    int32_t toggleHudButton;
+    int32_t toggleMusicButton;
     int32_t useItemBackwardButton;
     int32_t useItemForwardButton;
     int32_t gear1Button;
@@ -48,6 +52,9 @@ struct WheelReading {
     bool menuConfirm;
     bool menuCancel;
     bool openMenu;
+    bool jump;
+    bool toggleHud;
+    bool toggleMusic;
     bool useItemBackward;
     bool useItemForward;
     int32_t requestedGear;

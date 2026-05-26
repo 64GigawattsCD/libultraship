@@ -1253,14 +1253,10 @@ void InputEditorWindow::DrawPortTab(uint8_t portIndex) {
             DrawButtonLine("L", portIndex, BTN_L);
             DrawButtonLine("R", portIndex, BTN_R);
             DrawButtonLine("Z", portIndex, BTN_Z);
-            DrawButtonLine(StringHelper::Sprintf("C %s", ICON_FA_ARROW_UP).c_str(), portIndex, BTN_CUP,
-                           CHIP_COLOR_N64_YELLOW);
-            DrawButtonLine(StringHelper::Sprintf("C %s", ICON_FA_ARROW_DOWN).c_str(), portIndex, BTN_CDOWN,
-                           CHIP_COLOR_N64_YELLOW);
-            DrawButtonLine(StringHelper::Sprintf("C %s", ICON_FA_ARROW_LEFT).c_str(), portIndex, BTN_CLEFT,
-                           CHIP_COLOR_N64_YELLOW);
-            DrawButtonLine(StringHelper::Sprintf("C %s", ICON_FA_ARROW_RIGHT).c_str(), portIndex, BTN_CRIGHT,
-                           CHIP_COLOR_N64_YELLOW);
+            DrawButtonLine("Ceremony Debug Select Luigi", portIndex, BTN_CUP, CHIP_COLOR_N64_YELLOW);
+            DrawButtonLine("Ceremony Debug Select DK", portIndex, BTN_CDOWN, CHIP_COLOR_N64_YELLOW);
+            DrawButtonLine("Look Behind", portIndex, BTN_CLEFT, CHIP_COLOR_N64_YELLOW);
+            DrawButtonLine("Toggle HUD", portIndex, BTN_CRIGHT, CHIP_COLOR_N64_YELLOW);
         }
 
         if (ImGui::CollapsingHeader("D-Pad", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {
