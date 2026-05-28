@@ -84,7 +84,9 @@ class WheelDevice {
 
   private:
     void InitializeHaptics();
+    void InitializeLogitechSdkSpring();
     void UpdateProfilerCenteringSpring(const WheelForceFeedbackState& state, float speedRatio);
+    bool UpdateLogitechSdkSpring(int32_t springPercent);
     void UpdateSteeringWeight(const WheelForceFeedbackState& state);
     void UpdateSurfaceRumble(const WheelForceFeedbackState& state);
     void UpdateTerrainSteeringKnock(const WheelForceFeedbackState& state);
@@ -116,16 +118,20 @@ class WheelDevice {
     float mLastSteeringInput;
     int32_t mTerrainKickDirection;
     int32_t mLastProfilerSpringPercent;
+    int32_t mLastLogitechSdkSpringPercent;
+    int32_t mLogitechSdkIndex;
     int32_t mLastShifterButtonMask;
     int32_t mLastRequestedGear;
     int32_t mShifterGearHistory[8];
     uint32_t mShifterGearHistoryIndex;
     uint32_t mShifterGearHistoryCount;
     uint32_t mNextProfilerSpringUpdateTick;
+    uint32_t mNextLogitechSdkSpringUpdateTick;
     bool mSupportsSteeringWeight;
     bool mSupportsConstantForce;
     bool mSupportsPeriodic;
     bool mSupportsRumble;
+    bool mLogitechSdkSpringActive;
     bool mLastHitByItem;
     bool mShifterWasInGear;
 };

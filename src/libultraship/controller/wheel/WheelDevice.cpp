@@ -2,10 +2,13 @@
 #include "libultraship/bridge/consolevariablebridge.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 #include <spdlog/spdlog.h>
 
 #ifdef _WIN32
@@ -23,6 +26,9 @@
 #define WHEEL_PROFILER_MAX_SPRING_CVAR "gArcadeKart.LogitechProfilerMaxSpring"
 #define WHEEL_PROFILER_MENU_SPRING_CVAR "gArcadeKart.LogitechProfilerMenuSpring"
 #define WHEEL_SPRING_BASELINE_MULTIPLIER_CVAR "gArcadeKart.LogitechProfilerSpringBaselineMultiplier"
+#define WHEEL_LOGITECH_SDK_SPRING_CVAR "gArcadeKart.LogitechSdkSpringPercent"
+#define WHEEL_LOGITECH_SDK_SPRING_STEP 5.0f
+#define WHEEL_LOGITECH_SDK_USE_DYNAMIC_SPRING_CVAR "gArcadeKart.LogitechSdkUseSpringForce"
 #define WHEEL_SDL_CENTERING_CVAR "gArcadeKart.UseSdlWheelCentering"
 #define WHEEL_SHIFTER_SMOOTHING_FRAMES_CVAR "gArcadeKart.WheelShifterSmoothingFrames"
 #define WHEEL_GEAR_NONE -2
@@ -57,6 +63,312 @@ namespace LUS {
 static const WheelReading sEmptyWheelReading = { 0 };
 
 #ifdef _WIN32
+struct LogitechControllerPropertiesData {
+    bool forceEnable;
+    int overallGain;
+    int springGain;
+    int damperGain;
+    bool defaultSpringEnabled;
+    int defaultSpringGain;
+    bool combinePedals;
+    int wheelRange;
+    bool gameSettingsEnabled;
+    bool allowGameSettings;
+};
+
+class LogitechSteeringWheelSdk {
+  public:
+    static LogitechSteeringWheelSdk& Instance() {
+        static LogitechSteeringWheelSdk sdk;
+        return sdk;
+    }
+
+    bool EnsureInitialized() {
+        if (mInitialized) {
+            return true;
+        }
+        if (!EnsureLoaded()) {
+            return false;
+        }
+
+        HWND hwnd = GetActiveWindow();
+        if (hwnd == nullptr) {
+            hwnd = GetForegroundWindow();
+        }
+
+        bool initialized = false;
+        if (mSteeringInitializeWithWindow != nullptr && hwnd != nullptr) {
+            initialized = mSteeringInitializeWithWindow(true, hwnd);
+        }
+        if (!initialized && mSteeringInitialize != nullptr) {
+            initialized = mSteeringInitialize(true);
+        }
+
+        mInitialized = initialized;
+        mDebugInitialized.store(mInitialized ? 1 : 0);
+        if (mInitialized) {
+            SPDLOG_INFO("Logitech Steering Wheel SDK initialized.");
+        } else {
+            SPDLOG_WARN("Logitech Steering Wheel SDK failed to initialize.");
+        }
+        return mInitialized;
+    }
+
+    bool IsLoaded() const {
+        return mDll != nullptr;
+    }
+
+    void StartSpringWorker() {
+        bool expected = false;
+        if (!mWorkerStarted.compare_exchange_strong(expected, true)) {
+            return;
+        }
+
+        std::thread([this]() { SpringWorkerMain(); }).detach();
+    }
+
+    void RequestSpringPercent(int32_t springPercent) {
+        mDesiredSpringPercent.store(std::clamp(springPercent, 0, 100));
+        mUseDynamicSpringForce.store(CVarGetInteger(WHEEL_LOGITECH_SDK_USE_DYNAMIC_SPRING_CVAR, 0) != 0 ? 1 : 0);
+    }
+
+    bool HasWorkerStarted() const {
+        return mWorkerStarted.load();
+    }
+
+    int32_t GetObservedSpringPercent() const {
+        return mObservedSpringPercent.load();
+    }
+
+    void PublishDebugCvars() const {
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkLoaded", mDebugLoaded.load());
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkHasFunctions", mDebugHasFunctions.load());
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkInitialized", mDebugInitialized.load());
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkWorkerRunning", mDebugWorkerRunning.load());
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkCurrentOk", mDebugCurrentOk.load());
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkSetPreferredOk", mDebugSetPreferredOk.load());
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkPlaySpringOk", mDebugPlaySpringOk.load());
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkSpringActive", mDebugSpringActive.load());
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkSpringRequested", mDesiredSpringPercent.load());
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkSpringApplied", mAppliedSpringPercent.load());
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkSpringObserved", mObservedSpringPercent.load());
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkSpringGain", mObservedSpringGain.load());
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkDefaultSpringGain", mObservedDefaultSpringGain.load());
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkForceEnable", mObservedForceEnabled.load());
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkOverallGain", mObservedOverallGain.load());
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkDamperGain", mObservedDamperGain.load());
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkDefaultSpringEnabled", mObservedDefaultSpringEnabled.load());
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkWheelRange", mObservedWheelRange.load());
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkGameSettings", mObservedGameSettings.load());
+    }
+
+    bool Update() {
+        return mUpdate != nullptr && mUpdate();
+    }
+
+    bool GetCurrentProperties(int32_t index, LogitechControllerPropertiesData& properties) {
+        if (!EnsureInitialized() || mGetCurrentControllerProperties == nullptr) {
+            return false;
+        }
+
+        uint8_t rawProperties[64] = {};
+        bool received = mGetCurrentControllerProperties(index, rawProperties);
+        std::memcpy(&properties, rawProperties, sizeof(properties));
+        return received || IsPlausibleProperties(properties);
+    }
+
+    bool SetPreferredProperties(const LogitechControllerPropertiesData& properties) {
+        if (!EnsureInitialized() || mSetPreferredControllerProperties == nullptr) {
+            return false;
+        }
+
+        return mSetPreferredControllerProperties(properties);
+    }
+
+    bool PlaySpringForce(int32_t index, int32_t springPercent) {
+        if (!EnsureInitialized() || mPlaySpringForce == nullptr) {
+            return false;
+        }
+
+        return mPlaySpringForce(index, 0, springPercent, 100);
+    }
+
+    bool StopSpringForce(int32_t index) {
+        if (!EnsureInitialized() || mStopSpringForce == nullptr) {
+            return false;
+        }
+
+        return mStopSpringForce(index);
+    }
+
+  private:
+    using LogiSteeringInitialize = bool (*)(bool);
+    using LogiSteeringInitializeWithWindow = bool (*)(bool, HWND);
+    using LogiUpdate = bool (*)();
+    using LogiGetCurrentControllerProperties = bool (*)(int32_t, void*);
+    using LogiSetPreferredControllerProperties = bool (*)(LogitechControllerPropertiesData);
+    using LogiPlaySpringForce = bool (*)(int32_t, int32_t, int32_t, int32_t);
+    using LogiStopSpringForce = bool (*)(int32_t);
+
+    LogitechSteeringWheelSdk() = default;
+
+    bool EnsureLoaded() {
+        if (mTriedLoad) {
+            return mDll != nullptr;
+        }
+        mTriedLoad = true;
+
+        const char* dllPaths[] = {
+            "LogitechSteeringWheel.dll",
+            "C:\\Program Files\\Logitech\\Gaming Software\\SDKs\\LogitechSteeringWheel.dll",
+            "C:\\Program Files (x86)\\Logitech\\Gaming Software\\SDKs\\LogitechSteeringWheel.dll",
+        };
+
+        for (const char* dllPath : dllPaths) {
+            mDll = LoadLibraryA(dllPath);
+            if (mDll != nullptr) {
+                SPDLOG_INFO("Loaded Logitech Steering Wheel SDK from '{}'.", dllPath);
+                break;
+            }
+        }
+
+        mDebugLoaded.store(mDll != nullptr ? 1 : 0);
+        if (mDll == nullptr) {
+            SPDLOG_WARN("Logitech Steering Wheel SDK DLL was not found.");
+            return false;
+        }
+
+        mSteeringInitialize =
+            reinterpret_cast<LogiSteeringInitialize>(GetProcAddress(mDll, "LogiSteeringInitialize"));
+        mSteeringInitializeWithWindow = reinterpret_cast<LogiSteeringInitializeWithWindow>(
+            GetProcAddress(mDll, "LogiSteeringInitializeWithWindow"));
+        mUpdate = reinterpret_cast<LogiUpdate>(GetProcAddress(mDll, "LogiUpdate"));
+        mGetCurrentControllerProperties = reinterpret_cast<LogiGetCurrentControllerProperties>(
+            GetProcAddress(mDll, "LogiGetCurrentControllerProperties"));
+        mSetPreferredControllerProperties = reinterpret_cast<LogiSetPreferredControllerProperties>(
+            GetProcAddress(mDll, "LogiSetPreferredControllerProperties"));
+        mPlaySpringForce = reinterpret_cast<LogiPlaySpringForce>(GetProcAddress(mDll, "LogiPlaySpringForce"));
+        mStopSpringForce = reinterpret_cast<LogiStopSpringForce>(GetProcAddress(mDll, "LogiStopSpringForce"));
+
+        bool hasRequiredFunctions = mSteeringInitialize != nullptr && mUpdate != nullptr &&
+                                    mGetCurrentControllerProperties != nullptr &&
+                                    mSetPreferredControllerProperties != nullptr && mPlaySpringForce != nullptr;
+        mDebugHasFunctions.store(hasRequiredFunctions ? 1 : 0);
+        if (!hasRequiredFunctions) {
+            SPDLOG_WARN("Logitech Steering Wheel SDK is missing one or more required exports.");
+        }
+        return hasRequiredFunctions;
+    }
+
+    void SpringWorkerMain() {
+        mDebugWorkerRunning.store(1);
+        if (!EnsureInitialized()) {
+            mDebugWorkerRunning.store(0);
+            return;
+        }
+
+        int32_t lastAppliedSpringPercent = -1;
+        for (;;) {
+            Update();
+
+            LogitechControllerPropertiesData properties = {};
+            bool currentOk = GetCurrentProperties(0, properties);
+            mDebugCurrentOk.store(currentOk ? 1 : 0);
+            if (currentOk) {
+                int32_t observedSpringPercent =
+                    properties.defaultSpringEnabled ? properties.defaultSpringGain : properties.springGain;
+                if (observedSpringPercent <= 0) {
+                    observedSpringPercent = properties.defaultSpringGain > 0 ? properties.defaultSpringGain : 100;
+                }
+
+                mObservedSpringPercent.store(std::clamp(observedSpringPercent, 0, 100));
+                mObservedSpringGain.store(properties.springGain);
+                mObservedDefaultSpringGain.store(properties.defaultSpringGain);
+                mObservedForceEnabled.store(properties.forceEnable ? 1 : 0);
+                mObservedOverallGain.store(properties.overallGain);
+                mObservedDamperGain.store(properties.damperGain);
+                mObservedDefaultSpringEnabled.store(properties.defaultSpringEnabled ? 1 : 0);
+                mObservedWheelRange.store(properties.wheelRange);
+                mObservedGameSettings.store(properties.gameSettingsEnabled ? 1 : 0);
+
+                int32_t expectedUnset = -1;
+                mDesiredSpringPercent.compare_exchange_strong(expectedUnset, mObservedSpringPercent.load());
+            } else {
+                properties.forceEnable = true;
+                properties.overallGain = 100;
+                properties.springGain = 100;
+                properties.damperGain = 100;
+                properties.combinePedals = false;
+                properties.wheelRange = 200;
+                properties.gameSettingsEnabled = true;
+                properties.allowGameSettings = true;
+            }
+
+            int32_t desiredSpringPercent = mDesiredSpringPercent.load();
+            if (desiredSpringPercent >= 0 && desiredSpringPercent != lastAppliedSpringPercent) {
+                desiredSpringPercent = std::clamp(desiredSpringPercent, 0, 100);
+                properties.forceEnable = true;
+                properties.springGain = desiredSpringPercent;
+                if (properties.defaultSpringEnabled) {
+                    properties.defaultSpringGain = desiredSpringPercent;
+                }
+                properties.gameSettingsEnabled = true;
+                properties.allowGameSettings = true;
+
+                bool preferredOk = SetPreferredProperties(properties);
+                bool useDynamicSpringForce = mUseDynamicSpringForce.load() != 0;
+                bool springOk = useDynamicSpringForce ? PlaySpringForce(0, desiredSpringPercent) : false;
+                mDebugSetPreferredOk.store(preferredOk ? 1 : 0);
+                mDebugPlaySpringOk.store(springOk ? 1 : 0);
+                mDebugSpringActive.store((preferredOk || springOk) ? 1 : 0);
+                mAppliedSpringPercent.store(desiredSpringPercent);
+                lastAppliedSpringPercent = desiredSpringPercent;
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+
+    bool IsPlausibleProperties(const LogitechControllerPropertiesData& properties) const {
+        return properties.overallGain >= 0 && properties.overallGain <= 150 && properties.springGain >= 0 &&
+               properties.springGain <= 150 && properties.damperGain >= 0 && properties.damperGain <= 150 &&
+               properties.defaultSpringGain >= 0 && properties.defaultSpringGain <= 150 && properties.wheelRange >= 40 &&
+               properties.wheelRange <= 1080;
+    }
+
+    HMODULE mDll = nullptr;
+    bool mTriedLoad = false;
+    bool mInitialized = false;
+    LogiSteeringInitialize mSteeringInitialize = nullptr;
+    LogiSteeringInitializeWithWindow mSteeringInitializeWithWindow = nullptr;
+    LogiUpdate mUpdate = nullptr;
+    LogiGetCurrentControllerProperties mGetCurrentControllerProperties = nullptr;
+    LogiSetPreferredControllerProperties mSetPreferredControllerProperties = nullptr;
+    LogiPlaySpringForce mPlaySpringForce = nullptr;
+    LogiStopSpringForce mStopSpringForce = nullptr;
+    std::atomic<bool> mWorkerStarted{ false };
+    std::atomic<int32_t> mDesiredSpringPercent{ -1 };
+    std::atomic<int32_t> mUseDynamicSpringForce{ 0 };
+    std::atomic<int32_t> mAppliedSpringPercent{ -1 };
+    std::atomic<int32_t> mObservedSpringPercent{ -1 };
+    std::atomic<int32_t> mObservedSpringGain{ 0 };
+    std::atomic<int32_t> mObservedDefaultSpringGain{ 0 };
+    std::atomic<int32_t> mObservedForceEnabled{ 0 };
+    std::atomic<int32_t> mObservedOverallGain{ 0 };
+    std::atomic<int32_t> mObservedDamperGain{ 0 };
+    std::atomic<int32_t> mObservedDefaultSpringEnabled{ 0 };
+    std::atomic<int32_t> mObservedWheelRange{ 0 };
+    std::atomic<int32_t> mObservedGameSettings{ 0 };
+    std::atomic<int32_t> mDebugLoaded{ 0 };
+    std::atomic<int32_t> mDebugHasFunctions{ 0 };
+    std::atomic<int32_t> mDebugInitialized{ 0 };
+    std::atomic<int32_t> mDebugWorkerRunning{ 0 };
+    std::atomic<int32_t> mDebugCurrentOk{ 0 };
+    std::atomic<int32_t> mDebugSetPreferredOk{ 0 };
+    std::atomic<int32_t> mDebugPlaySpringOk{ 0 };
+    std::atomic<int32_t> mDebugSpringActive{ 0 };
+};
+
 static bool SetRegistryDword(HKEY root, const char* subkey, const char* valueName, DWORD value) {
     HKEY key = nullptr;
     if (RegOpenKeyExA(root, subkey, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) {
@@ -263,13 +575,14 @@ WheelDevice::WheelDevice(WheelDeviceDefinition definition)
       mCenteringForceEffectId(-1), mPeriodicEffectId(-1), mTerrainKickEffectId(-1), mSlopeForceEffectId(-1),
       mCoarseTerrainKickEffectId(-1), mNextRumbleTick(0), mNextTerrainKickTick(0), mNextCoarseTerrainKickTick(0),
       mLightningFeedbackUntilTick(0), mFeedbackNoiseState(0x1234ABCD), mLastSteeringInput(0.0f), mTerrainKickDirection(1),
-      mLastProfilerSpringPercent(-1), mLastShifterButtonMask(-1), mLastRequestedGear(WHEEL_GEAR_NONE),
+      mLastProfilerSpringPercent(-1), mLastLogitechSdkSpringPercent(-1), mLogitechSdkIndex(0),
+      mLastShifterButtonMask(-1), mLastRequestedGear(WHEEL_GEAR_NONE),
       mShifterGearHistory{ WHEEL_GEAR_NONE, WHEEL_GEAR_NONE, WHEEL_GEAR_NONE, WHEEL_GEAR_NONE, WHEEL_GEAR_NONE,
                             WHEEL_GEAR_NONE, WHEEL_GEAR_NONE, WHEEL_GEAR_NONE },
-      mShifterGearHistoryIndex(0), mShifterGearHistoryCount(0),
-      mNextProfilerSpringUpdateTick(0),
+      mShifterGearHistoryIndex(0), mShifterGearHistoryCount(0), mNextProfilerSpringUpdateTick(0),
+      mNextLogitechSdkSpringUpdateTick(0),
       mSupportsSteeringWeight(false), mSupportsConstantForce(false), mSupportsPeriodic(false), mSupportsRumble(false),
-      mLastHitByItem(false), mShifterWasInGear(false) {
+      mLogitechSdkSpringActive(false), mLastHitByItem(false), mShifterWasInGear(false) {
 }
 
 bool WheelDevice::Matches(int32_t deviceIndex) const {
@@ -291,6 +604,7 @@ bool WheelDevice::Open(int32_t deviceIndex) {
 
     mJoystick = SDL_JoystickOpen(deviceIndex);
     InitializeHaptics();
+    InitializeLogitechSdkSpring();
     SPDLOG_INFO("Wheel device '{}' opened: axes={}, buttons={}, hats={}, haptic={}", mDefinition.name,
                 IsOpen() ? SDL_JoystickNumAxes(mJoystick) : 0, IsOpen() ? SDL_JoystickNumButtons(mJoystick) : 0,
                 IsOpen() ? SDL_JoystickNumHats(mJoystick) : 0, mHaptic != nullptr);
@@ -342,6 +656,55 @@ void WheelDevice::InitializeHaptics() {
         mSupportsRumble, SDL_HapticNumAxes(mHaptic));
 }
 
+void WheelDevice::InitializeLogitechSdkSpring() {
+#ifdef _WIN32
+    CVarSetInteger("gArcadeKart.DebugLogitechSdkSpringActive", 0);
+    if (mDefinition.vendorId != 0x046D) {
+        return;
+    }
+
+    LogitechSteeringWheelSdk& sdk = LogitechSteeringWheelSdk::Instance();
+    sdk.StartSpringWorker();
+    sdk.PublishDebugCvars();
+#else
+    CVarSetInteger("gArcadeKart.DebugLogitechSdkSpringActive", 0);
+#endif
+}
+
+bool WheelDevice::UpdateLogitechSdkSpring(int32_t springPercent) {
+#ifdef _WIN32
+    if (mDefinition.vendorId != 0x046D) {
+        return false;
+    }
+
+    LogitechSteeringWheelSdk& sdk = LogitechSteeringWheelSdk::Instance();
+    sdk.StartSpringWorker();
+    sdk.RequestSpringPercent(springPercent);
+    sdk.PublishDebugCvars();
+
+    int32_t observedSpringPercent = sdk.GetObservedSpringPercent();
+    if (observedSpringPercent >= 0 && CVarGetInteger("gArcadeKart.LogitechSdkSpringSeeded", 0) == 0) {
+        CVarSetFloat(WHEEL_LOGITECH_SDK_SPRING_CVAR, static_cast<float>(observedSpringPercent));
+        CVarSetInteger("gArcadeKart.LogitechSdkSpringSeeded", 1);
+    }
+
+    if (springPercent == mLastLogitechSdkSpringPercent && SDL_GetTicks() < mNextLogitechSdkSpringUpdateTick) {
+        CVarSetInteger("gArcadeKart.DebugLogitechSdkSpringSkipped", 1);
+        return true;
+    }
+    mLastLogitechSdkSpringPercent = springPercent;
+    mNextLogitechSdkSpringUpdateTick = SDL_GetTicks() + 150;
+
+    CVarSetInteger("gArcadeKart.DebugLogitechSdkSpringWriteOk", sdk.HasWorkerStarted() ? 1 : 0);
+    CVarSetInteger("gArcadeKart.DebugLogitechSdkSpringSkipped", 0);
+    CVarSetInteger("gArcadeKart.DebugLogitechSdkSpringRequested", springPercent);
+    return sdk.HasWorkerStarted();
+#else
+    (void) springPercent;
+    return false;
+#endif
+}
+
 void WheelDevice::UpdateProfilerCenteringSpring(const WheelForceFeedbackState& state, float speedRatio) {
 #ifdef _WIN32
     if (!CVarGetInteger(WHEEL_PROFILER_SPRING_CVAR, true)) {
@@ -359,7 +722,8 @@ void WheelDevice::UpdateProfilerCenteringSpring(const WheelForceFeedbackState& s
     CVarSetInteger("gArcadeKart.DebugSpringProfilerEnabled", 1);
     CVarSetInteger("gArcadeKart.DebugSpringProfilerSkipped", 0);
     float baselineMultiplier = std::clamp(CVarGetFloat(WHEEL_SPRING_BASELINE_MULTIPLIER_CVAR, 8.0f), 0.25f, 16.0f);
-    float rawMinSpring = CVarGetFloat(WHEEL_PROFILER_MIN_SPRING_CVAR, 12.0f) * baselineMultiplier;
+    float fallbackSpring = CVarGetFloat(WHEEL_PROFILER_MIN_SPRING_CVAR, 12.0f) * baselineMultiplier;
+    float rawMinSpring = CVarGetFloat(WHEEL_LOGITECH_SDK_SPRING_CVAR, fallbackSpring);
     float minSpring = std::clamp(rawMinSpring, 0.0f, 100.0f);
     float characterMultiplier = 1.0f;
     float surfaceMultiplier = 1.0f;
@@ -376,6 +740,16 @@ void WheelDevice::UpdateProfilerCenteringSpring(const WheelForceFeedbackState& s
     CVarSetInteger("gArcadeKart.DebugSpringSurface", state.surfaceType);
     CVarSetInteger("gArcadeKart.DebugSpringProfilerRequested", springPercent);
     CVarSetInteger("gArcadeKart.DebugSpringProfilerLast", mLastProfilerSpringPercent);
+    bool wroteSdkSpring = UpdateLogitechSdkSpring(springPercent);
+    if (wroteSdkSpring) {
+        CVarSetInteger("gArcadeKart.DebugSpringProfilerDriverWrite", 0);
+        CVarSetInteger("gArcadeKart.DebugSpringProfilerGlobalWrite", 0);
+        CVarSetInteger("gArcadeKart.DebugSpringProfilerWriteOk", 1);
+        CVarSetInteger("gArcadeKart.DebugSpringProfilerSkipped", 4);
+        mLastProfilerSpringPercent = springPercent;
+        mNextProfilerSpringUpdateTick = now + 250;
+        return;
+    }
     if (mLastProfilerSpringPercent >= 0 && abs(springPercent - mLastProfilerSpringPercent) < 3) {
         CVarSetInteger("gArcadeKart.DebugSpringProfilerSkipped", 3);
         mNextProfilerSpringUpdateTick = now + 250;
@@ -429,7 +803,8 @@ void WheelDevice::UpdateProfilerCenteringSpring(const WheelForceFeedbackState& s
 
 void WheelDevice::UpdateSteeringWeight(const WheelForceFeedbackState& state) {
     float baselineMultiplier = std::clamp(CVarGetFloat(WHEEL_SPRING_BASELINE_MULTIPLIER_CVAR, 8.0f), 0.25f, 16.0f);
-    float minSpring = std::clamp(CVarGetFloat(WHEEL_PROFILER_MIN_SPRING_CVAR, 12.0f) * baselineMultiplier, 0.0f, 100.0f);
+    float fallbackSpring = CVarGetFloat(WHEEL_PROFILER_MIN_SPRING_CVAR, 12.0f) * baselineMultiplier;
+    float minSpring = std::clamp(CVarGetFloat(WHEEL_LOGITECH_SDK_SPRING_CVAR, fallbackSpring), 0.0f, 100.0f);
     float centeringRatio = minSpring / 100.0f;
     UpdateProfilerCenteringSpring(state, centeringRatio);
 
