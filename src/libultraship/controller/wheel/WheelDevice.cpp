@@ -3,8 +3,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <spdlog/spdlog.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #define RAW_AXIS_DEADZONE 0.08f
 #define MAX_SDL_AXIS_VALUE (float)INT16_MAX
@@ -12,6 +18,13 @@
 #define WHEEL_THROTTLE_TUNING_CVAR "gArcadeKart.WheelThrottleTuning"
 #define WHEEL_BRAKE_TUNING_CVAR "gArcadeKart.WheelBrakeTuning"
 #define WHEEL_CLUTCH_TUNING_CVAR "gArcadeKart.WheelClutchTuning"
+#define WHEEL_PROFILER_SPRING_CVAR "gArcadeKart.UseLogitechProfilerSpring"
+#define WHEEL_PROFILER_MIN_SPRING_CVAR "gArcadeKart.LogitechProfilerMinSpring"
+#define WHEEL_PROFILER_MAX_SPRING_CVAR "gArcadeKart.LogitechProfilerMaxSpring"
+#define WHEEL_PROFILER_MENU_SPRING_CVAR "gArcadeKart.LogitechProfilerMenuSpring"
+#define WHEEL_SPRING_BASELINE_MULTIPLIER_CVAR "gArcadeKart.LogitechProfilerSpringBaselineMultiplier"
+#define WHEEL_SDL_CENTERING_CVAR "gArcadeKart.UseSdlWheelCentering"
+#define WHEEL_SHIFTER_SMOOTHING_FRAMES_CVAR "gArcadeKart.WheelShifterSmoothingFrames"
 #define WHEEL_GEAR_NONE -2
 #define WHEEL_GEAR_REVERSE -1
 #define WHEEL_GEAR_NEUTRAL 0
@@ -43,6 +56,19 @@ namespace LUS {
 
 static const WheelReading sEmptyWheelReading = { 0 };
 
+#ifdef _WIN32
+static bool SetRegistryDword(HKEY root, const char* subkey, const char* valueName, DWORD value) {
+    HKEY key = nullptr;
+    if (RegOpenKeyExA(root, subkey, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) {
+        return false;
+    }
+
+    LONG result = RegSetValueExA(key, valueName, 0, REG_DWORD, reinterpret_cast<const BYTE*>(&value), sizeof(value));
+    RegCloseKey(key);
+    return result == ERROR_SUCCESS;
+}
+#endif
+
 static float ApplyWheelSteeringTuning(float rawSteeringInput) {
     if (rawSteeringInput == 0.0f) {
         return 0.0f;
@@ -64,6 +90,15 @@ static float ApplyWheelPedalTuning(float rawPedalInput, const char* tuningCvar) 
     float inputMagnitude = std::clamp(rawPedalInput, 0.0f, 1.0f);
     float tunedPedalInput = powf(inputMagnitude, tuningConstant);
     return std::clamp(tunedPedalInput, 0.0f, 1.0f);
+}
+
+static bool ShouldUseSdlWheelCentering() {
+#ifdef _WIN32
+    bool profilerSpringEnabled = CVarGetInteger(WHEEL_PROFILER_SPRING_CVAR, true) != 0;
+    return CVarGetInteger(WHEEL_SDL_CENTERING_CVAR, profilerSpringEnabled ? 0 : 1) != 0;
+#else
+    return CVarGetInteger(WHEEL_SDL_CENTERING_CVAR, true) != 0;
+#endif
 }
 
 static float GetSurfaceRumbleStrength(uint16_t surfaceType) {
@@ -102,6 +137,36 @@ static float GetSurfaceRumbleStrength(uint16_t surfaceType) {
         case SURFACE_ASPHALT:
         default:
             return 0.04f;
+    }
+}
+
+static float GetSurfaceCenteringMultiplier(uint16_t surfaceType) {
+    switch (surfaceType) {
+        case SURFACE_ICE:
+            return 0.50f;
+        case SURFACE_DIRT_OFFROAD:
+        case SURFACE_CLIFF:
+        case SURFACE_TRAIN_TRACK:
+            return 0.60f;
+        case SURFACE_SAND_OFFROAD:
+        case SURFACE_SNOW_OFFROAD:
+        case SURFACE_ROPE_BRIDGE:
+            return 0.68f;
+        case SURFACE_DIRT:
+        case SURFACE_GRASS:
+        case SURFACE_SNOW:
+            return 0.75f;
+        case SURFACE_SAND:
+        case SURFACE_WET_SAND:
+            return 0.78f;
+        case SURFACE_STONE:
+        case SURFACE_CAVE:
+            return 0.85f;
+        case SURFACE_BRIDGE:
+        case SURFACE_WOOD_BRIDGE:
+            return 0.88f;
+        default:
+            return 1.0f;
     }
 }
 
@@ -198,6 +263,11 @@ WheelDevice::WheelDevice(WheelDeviceDefinition definition)
       mCenteringForceEffectId(-1), mPeriodicEffectId(-1), mTerrainKickEffectId(-1), mSlopeForceEffectId(-1),
       mCoarseTerrainKickEffectId(-1), mNextRumbleTick(0), mNextTerrainKickTick(0), mNextCoarseTerrainKickTick(0),
       mLightningFeedbackUntilTick(0), mFeedbackNoiseState(0x1234ABCD), mLastSteeringInput(0.0f), mTerrainKickDirection(1),
+      mLastProfilerSpringPercent(-1), mLastShifterButtonMask(-1), mLastRequestedGear(WHEEL_GEAR_NONE),
+      mShifterGearHistory{ WHEEL_GEAR_NONE, WHEEL_GEAR_NONE, WHEEL_GEAR_NONE, WHEEL_GEAR_NONE, WHEEL_GEAR_NONE,
+                            WHEEL_GEAR_NONE, WHEEL_GEAR_NONE, WHEEL_GEAR_NONE },
+      mShifterGearHistoryIndex(0), mShifterGearHistoryCount(0),
+      mNextProfilerSpringUpdateTick(0),
       mSupportsSteeringWeight(false), mSupportsConstantForce(false), mSupportsPeriodic(false), mSupportsRumble(false),
       mLastHitByItem(false), mShifterWasInGear(false) {
 }
@@ -250,6 +320,11 @@ void WheelDevice::InitializeHaptics() {
     mSupportsConstantForce = (supportedEffects & SDL_HAPTIC_CONSTANT) != 0;
     mSupportsPeriodic = (supportedEffects & (SDL_HAPTIC_SINE | SDL_HAPTIC_TRIANGLE)) != 0;
     mSupportsRumble = SDL_HapticRumbleSupported(mHaptic) == SDL_TRUE;
+    CVarSetInteger("gArcadeKart.DebugSpringHapticOpen", 1);
+    CVarSetInteger("gArcadeKart.DebugSpringSupportsSpring", mSupportsSteeringWeight ? 1 : 0);
+    CVarSetInteger("gArcadeKart.DebugSpringSupportsConstant", mSupportsConstantForce ? 1 : 0);
+    CVarSetInteger("gArcadeKart.DebugSpringSupportsPeriodic", mSupportsPeriodic ? 1 : 0);
+    CVarSetInteger("gArcadeKart.DebugSpringSupportsRumble", mSupportsRumble ? 1 : 0);
 
     if (mSupportsRumble) {
         SDL_HapticRumbleInit(mHaptic);
@@ -257,7 +332,7 @@ void WheelDevice::InitializeHaptics() {
     if ((supportedEffects & SDL_HAPTIC_GAIN) != 0) {
         SDL_HapticSetGain(mHaptic, 100);
     }
-    if ((supportedEffects & SDL_HAPTIC_AUTOCENTER) != 0) {
+    if ((supportedEffects & SDL_HAPTIC_AUTOCENTER) != 0 && ShouldUseSdlWheelCentering()) {
         SDL_HapticSetAutocenter(mHaptic, 0);
     }
 
@@ -267,15 +342,129 @@ void WheelDevice::InitializeHaptics() {
         mSupportsRumble, SDL_HapticNumAxes(mHaptic));
 }
 
-void WheelDevice::UpdateSteeringWeight(float speedKmh, bool grounded) {
-    if (mHaptic == nullptr || (!mSupportsSteeringWeight && !mSupportsConstantForce)) {
+void WheelDevice::UpdateProfilerCenteringSpring(const WheelForceFeedbackState& state, float speedRatio) {
+#ifdef _WIN32
+    if (!CVarGetInteger(WHEEL_PROFILER_SPRING_CVAR, true)) {
+        CVarSetInteger("gArcadeKart.DebugSpringProfilerEnabled", 0);
+        CVarSetInteger("gArcadeKart.DebugSpringProfilerSkipped", 2);
         return;
     }
 
-    float speedRatio = grounded ? std::clamp(speedKmh / WHEEL_MAX_FEEDBACK_SPEED_KMH, 0.0f, 1.0f) : 0.0f;
-    int16_t coefficient = static_cast<int16_t>(0x0500 + (speedRatio * 0x4800));
-    uint16_t saturation = static_cast<uint16_t>(0x1800 + (speedRatio * 0xC000));
-    uint16_t deadband = grounded ? 0x0500 : 0xFFFF;
+    uint32_t now = SDL_GetTicks();
+    if (now < mNextProfilerSpringUpdateTick) {
+        CVarSetInteger("gArcadeKart.DebugSpringProfilerSkipped", 1);
+        return;
+    }
+
+    CVarSetInteger("gArcadeKart.DebugSpringProfilerEnabled", 1);
+    CVarSetInteger("gArcadeKart.DebugSpringProfilerSkipped", 0);
+    float baselineMultiplier = std::clamp(CVarGetFloat(WHEEL_SPRING_BASELINE_MULTIPLIER_CVAR, 8.0f), 0.25f, 16.0f);
+    float rawMinSpring = CVarGetFloat(WHEEL_PROFILER_MIN_SPRING_CVAR, 12.0f) * baselineMultiplier;
+    float minSpring = std::clamp(rawMinSpring, 0.0f, 100.0f);
+    float characterMultiplier = 1.0f;
+    float surfaceMultiplier = 1.0f;
+    float targetSpring = minSpring;
+    int32_t springPercent = static_cast<int32_t>(targetSpring * characterMultiplier * surfaceMultiplier);
+    springPercent = std::clamp(springPercent, 0, 100);
+    CVarSetFloat("gArcadeKart.DebugSpringRawBase", rawMinSpring);
+    CVarSetFloat("gArcadeKart.DebugSpringBase", targetSpring);
+    CVarSetFloat("gArcadeKart.DebugSpringCharacterMultiplier", characterMultiplier);
+    CVarSetFloat("gArcadeKart.DebugSpringSurfaceMultiplier", surfaceMultiplier);
+    CVarSetFloat("gArcadeKart.DebugSpringPercent", static_cast<float>(springPercent));
+    CVarSetFloat("gArcadeKart.DebugSpringBaselineMultiplier", baselineMultiplier);
+    CVarSetInteger("gArcadeKart.DebugSpringGrounded", state.grounded ? 1 : 0);
+    CVarSetInteger("gArcadeKart.DebugSpringSurface", state.surfaceType);
+    CVarSetInteger("gArcadeKart.DebugSpringProfilerRequested", springPercent);
+    CVarSetInteger("gArcadeKart.DebugSpringProfilerLast", mLastProfilerSpringPercent);
+    if (mLastProfilerSpringPercent >= 0 && abs(springPercent - mLastProfilerSpringPercent) < 3) {
+        CVarSetInteger("gArcadeKart.DebugSpringProfilerSkipped", 3);
+        mNextProfilerSpringUpdateTick = now + 250;
+        return;
+    }
+
+    char driverSubkey[128];
+    snprintf(driverSubkey, sizeof(driverSubkey), "Software\\Logitech\\Gaming Software\\DriverSettings\\VID_%04X&PID_%04X",
+             mDefinition.vendorId, mDefinition.productId);
+    DWORD springDriverValue = static_cast<DWORD>(springPercent * 100);
+
+    bool wroteDriverSpring = SetRegistryDword(HKEY_CURRENT_USER, driverSubkey, "PersistentCenteringSpring", 1) &&
+                             SetRegistryDword(HKEY_CURRENT_USER, driverSubkey, "CenteringSpring", springDriverValue) &&
+                             SetRegistryDword(HKEY_CURRENT_USER, driverSubkey, "SpringStrength", springDriverValue);
+    bool wroteGlobalSpring =
+        SetRegistryDword(HKEY_CURRENT_USER, "Software\\Logitech\\Gaming Software\\GlobalDeviceSettings\\G27",
+                         "PersistentSpringEnable", 1) &&
+        SetRegistryDword(HKEY_CURRENT_USER, "Software\\Logitech\\Gaming Software\\GlobalDeviceSettings\\G27",
+                         "SpringGainPercentage", static_cast<DWORD>(springPercent)) &&
+        SetRegistryDword(HKEY_CURRENT_USER, "Software\\Logitech\\Gaming Software\\GlobalDeviceSettings\\G27",
+                         "DefaultSpringGainPercentage", static_cast<DWORD>(springPercent));
+    CVarSetInteger("gArcadeKart.DebugSpringProfilerDriverWrite", wroteDriverSpring ? 1 : 0);
+    CVarSetInteger("gArcadeKart.DebugSpringProfilerGlobalWrite", wroteGlobalSpring ? 1 : 0);
+    CVarSetInteger("gArcadeKart.DebugSpringProfilerDriverValue", static_cast<int32_t>(springDriverValue));
+    CVarSetInteger("gArcadeKart.DebugSpringProfilerWriteOk", (wroteDriverSpring || wroteGlobalSpring) ? 1 : 0);
+
+    if (mHaptic != nullptr && ShouldUseSdlWheelCentering()) {
+        int autocenterResult = SDL_HapticSetAutocenter(mHaptic, springPercent);
+        CVarSetInteger("gArcadeKart.DebugSpringSdlAutocenterWriteOk", autocenterResult == 0 ? 1 : 0);
+        CVarSetInteger("gArcadeKart.DebugSpringSdlAutocenterPercent", springPercent);
+    } else {
+        CVarSetInteger("gArcadeKart.DebugSpringSdlAutocenterWriteOk", 0);
+        CVarSetInteger("gArcadeKart.DebugSpringSdlAutocenterPercent", -1);
+    }
+
+    if (wroteDriverSpring || wroteGlobalSpring) {
+        mLastProfilerSpringPercent = springPercent;
+    }
+    mNextProfilerSpringUpdateTick = now + 250;
+#else
+    CVarSetFloat("gArcadeKart.DebugSpringBase", 0.0f);
+    CVarSetFloat("gArcadeKart.DebugSpringCharacterMultiplier", 1.0f);
+    CVarSetFloat("gArcadeKart.DebugSpringSurfaceMultiplier", 1.0f);
+    CVarSetFloat("gArcadeKart.DebugSpringPercent", 0.0f);
+    CVarSetInteger("gArcadeKart.DebugSpringGrounded", state.grounded ? 1 : 0);
+    CVarSetInteger("gArcadeKart.DebugSpringSurface", state.surfaceType);
+    (void) state;
+#endif
+    (void) speedRatio;
+}
+
+void WheelDevice::UpdateSteeringWeight(const WheelForceFeedbackState& state) {
+    float baselineMultiplier = std::clamp(CVarGetFloat(WHEEL_SPRING_BASELINE_MULTIPLIER_CVAR, 8.0f), 0.25f, 16.0f);
+    float minSpring = std::clamp(CVarGetFloat(WHEEL_PROFILER_MIN_SPRING_CVAR, 12.0f) * baselineMultiplier, 0.0f, 100.0f);
+    float centeringRatio = minSpring / 100.0f;
+    UpdateProfilerCenteringSpring(state, centeringRatio);
+
+    CVarSetInteger("gArcadeKart.DebugSpringSdlCenteringEnabled", ShouldUseSdlWheelCentering() ? 1 : 0);
+    if (!ShouldUseSdlWheelCentering()) {
+        if (mHaptic != nullptr && mSteeringWeightEffectId >= 0) {
+            SDL_HapticStopEffect(mHaptic, mSteeringWeightEffectId);
+            SDL_HapticDestroyEffect(mHaptic, mSteeringWeightEffectId);
+            mSteeringWeightEffectId = -1;
+        }
+        if (mHaptic != nullptr && mCenteringForceEffectId >= 0) {
+            SDL_HapticStopEffect(mHaptic, mCenteringForceEffectId);
+            SDL_HapticDestroyEffect(mHaptic, mCenteringForceEffectId);
+            mCenteringForceEffectId = -1;
+        }
+        CVarSetFloat("gArcadeKart.DebugSpringCenteringRatio", centeringRatio);
+        CVarSetInteger("gArcadeKart.DebugSpringHapticEffectActive", 0);
+        CVarSetInteger("gArcadeKart.DebugSpringHapticWriteOk", 0);
+        CVarSetInteger("gArcadeKart.DebugSpringHapticEffectId", -1);
+        return;
+    }
+
+    if (mHaptic == nullptr || (!mSupportsSteeringWeight && !mSupportsConstantForce)) {
+        CVarSetInteger("gArcadeKart.DebugSpringHapticEffectActive", 0);
+        return;
+    }
+
+    int16_t coefficient = static_cast<int16_t>(std::clamp(0x1200 * baselineMultiplier, 0.0f, 32767.0f));
+    uint16_t saturation = static_cast<uint16_t>(std::clamp(0x3000 * baselineMultiplier, 0.0f, 65535.0f));
+    uint16_t deadband = 0x0100;
+    CVarSetFloat("gArcadeKart.DebugSpringCenteringRatio", centeringRatio);
+    CVarSetInteger("gArcadeKart.DebugSpringHapticCoefficient", coefficient);
+    CVarSetInteger("gArcadeKart.DebugSpringHapticSaturation", saturation);
+    CVarSetInteger("gArcadeKart.DebugSpringHapticDeadband", deadband);
+    CVarSetInteger("gArcadeKart.DebugSpringHapticEffectId", mSteeringWeightEffectId);
 
     if (mSupportsSteeringWeight) {
         SDL_HapticEffect effect;
@@ -294,18 +483,24 @@ void WheelDevice::UpdateSteeringWeight(float speedKmh, bool grounded) {
             mSteeringWeightEffectId = SDL_HapticNewEffect(mHaptic, &effect);
             if (mSteeringWeightEffectId >= 0) {
                 SDL_HapticRunEffect(mHaptic, mSteeringWeightEffectId, SDL_HAPTIC_INFINITY);
+                CVarSetInteger("gArcadeKart.DebugSpringHapticEffectActive", 1);
+                CVarSetInteger("gArcadeKart.DebugSpringHapticWriteOk", 1);
             } else {
                 SPDLOG_WARN("Wheel device '{}' spring effect failed: {}", mDefinition.name, SDL_GetError());
+                CVarSetInteger("gArcadeKart.DebugSpringHapticEffectActive", 0);
+                CVarSetInteger("gArcadeKart.DebugSpringHapticWriteOk", 0);
                 mSupportsSteeringWeight = false;
             }
         } else {
-            SDL_HapticUpdateEffect(mHaptic, mSteeringWeightEffectId, &effect);
+            int updateResult = SDL_HapticUpdateEffect(mHaptic, mSteeringWeightEffectId, &effect);
+            CVarSetInteger("gArcadeKart.DebugSpringHapticWriteOk", updateResult == 0 ? 1 : 0);
+            CVarSetInteger("gArcadeKart.DebugSpringHapticEffectActive", updateResult == 0 ? 1 : 0);
         }
         return;
     }
 
     if (mSupportsConstantForce) {
-        PlaySignedConstantSteeringForce(-mLastSteeringInput * speedRatio * 0.85f, 120, mCenteringForceEffectId);
+        PlaySignedConstantSteeringForce(-mLastSteeringInput * centeringRatio * 0.85f, 120, mCenteringForceEffectId);
     }
 }
 
@@ -315,6 +510,7 @@ void WheelDevice::PlaySignedConstantSteeringForce(float signedStrength, uint32_t
     }
 
     float clampedStrength = std::clamp(signedStrength, -1.0f, 1.0f);
+    CVarSetFloat("gArcadeKart.DebugForceConstantSigned", clampedStrength);
     SDL_HapticEffect effect;
     std::memset(&effect, 0, sizeof(effect));
     effect.type = SDL_HAPTIC_CONSTANT;
@@ -430,6 +626,8 @@ void WheelDevice::UpdateTerrainSteeringKnock(const WheelForceFeedbackState& stat
 
     float steeringKickStrength = std::clamp(terrainStrength * (0.25f + (speedRatio * 0.95f)), 0.0f, 0.85f);
     uint32_t kickInterval = GetSurfaceSteeringKnockInterval(state.surfaceType);
+    CVarSetFloat("gArcadeKart.DebugForceTerrainKick", steeringKickStrength);
+    CVarSetInteger("gArcadeKart.DebugForceTerrainKickInterval", static_cast<int32_t>(kickInterval));
     PlayConstantSteeringKick(steeringKickStrength, std::min<uint32_t>(kickInterval + 10, 120));
     mNextTerrainKickTick = now + kickInterval;
 }
@@ -457,6 +655,8 @@ void WheelDevice::UpdateCoarseTerrainSteeringKnock(const WheelForceFeedbackState
     float steeringKickStrength = std::clamp(randomDirection * randomStrength * (0.35f + speedRatio * 0.75f),
                                             -0.95f, 0.95f);
 
+    CVarSetFloat("gArcadeKart.DebugForceCoarseKick", steeringKickStrength);
+    CVarSetInteger("gArcadeKart.DebugForceCoarseKickInterval", static_cast<int32_t>(randomInterval));
     PlaySignedConstantSteeringForce(steeringKickStrength, randomDuration, mCoarseTerrainKickEffectId);
     mNextCoarseTerrainKickTick = now + randomInterval;
 }
@@ -513,6 +713,7 @@ void WheelDevice::UpdateSurfaceRumble(const WheelForceFeedbackState& state) {
 
     float surfaceStrength = GetSurfaceRumbleStrength(state.surfaceType);
     float rumbleStrength = std::clamp(surfaceStrength * (0.30f + (speedRatio * 0.90f)), 0.0f, 0.65f);
+    CVarSetFloat("gArcadeKart.DebugForceSurfaceRumble", rumbleStrength);
     if (rumbleStrength > 0.0f) {
         if (mSupportsPeriodic) {
             uint16_t periodMs = state.surfaceType == SURFACE_ICE ? 7 : static_cast<uint16_t>(GetSurfaceRumbleInterval(state.surfaceType));
@@ -530,7 +731,7 @@ void WheelDevice::UpdateForceFeedback(const WheelForceFeedbackState& state) {
         return;
     }
 
-    UpdateSteeringWeight(state.speedKmh, state.grounded);
+    UpdateSteeringWeight(state);
     UpdateSlopeSteeringBias(state);
     UpdateTerrainSteeringKnock(state);
     UpdateCoarseTerrainSteeringKnock(state);
@@ -586,6 +787,53 @@ bool WheelDevice::ReadButton(int32_t buttonIndex) const {
     return SDL_JoystickGetButton(mJoystick, buttonIndex) != 0;
 }
 
+int32_t WheelDevice::SmoothWheelShifterGear(int32_t rawGear) {
+    const uint32_t smoothingFrames =
+        static_cast<uint32_t>(std::clamp(CVarGetInteger(WHEEL_SHIFTER_SMOOTHING_FRAMES_CVAR, 4), 1, 8));
+    uint32_t neutralCount = 0;
+    int32_t bestGear = rawGear;
+    int32_t bestCount = -1;
+    int32_t bestNewestRank = -1;
+
+    mShifterGearHistory[mShifterGearHistoryIndex] = rawGear;
+    mShifterGearHistoryIndex = (mShifterGearHistoryIndex + 1) % 8;
+    if (mShifterGearHistoryCount < 8) {
+        mShifterGearHistoryCount++;
+    }
+
+    for (uint32_t i = 0; i < smoothingFrames; i++) {
+        uint32_t candidateIndex = (mShifterGearHistoryIndex + 8 - 1 - i) % 8;
+        int32_t candidate = mShifterGearHistory[candidateIndex];
+        int32_t count = 0;
+        int32_t newestRank = -1;
+
+        for (uint32_t age = 0; age < smoothingFrames; age++) {
+            uint32_t historyIndex = (mShifterGearHistoryIndex + 8 - 1 - age) % 8;
+            if (mShifterGearHistory[historyIndex] == candidate) {
+                count++;
+                if (newestRank < 0) {
+                    newestRank = (int32_t) (smoothingFrames - age);
+                }
+            }
+        }
+
+        if ((count > bestCount) || ((count == bestCount) && (newestRank > bestNewestRank))) {
+            bestGear = candidate;
+            bestCount = count;
+            bestNewestRank = newestRank;
+        }
+        if (candidate == WHEEL_GEAR_NEUTRAL) {
+            neutralCount = (uint32_t) count;
+        }
+    }
+
+    CVarSetInteger("gArcadeKart.DebugShifterRawGear", rawGear);
+    CVarSetInteger("gArcadeKart.DebugShifterSmoothedGear", bestGear);
+    CVarSetInteger("gArcadeKart.DebugShifterSmoothingFrames", smoothingFrames);
+    CVarSetInteger("gArcadeKart.DebugShifterNeutralSamples", neutralCount);
+    return bestGear;
+}
+
 WheelReading WheelDevice::Read() {
     WheelReading reading = sEmptyWheelReading;
     reading.requestedGear = WHEEL_GEAR_NONE;
@@ -626,22 +874,53 @@ WheelReading WheelDevice::Read() {
     reading.useItemForward = ReadButton(mDefinition.useItemForwardButton);
 
     if (mDefinition.gear1Button >= 0) {
+        int32_t shifterButtonMask = 0;
+        int32_t rawRequestedGear = WHEEL_GEAR_NEUTRAL;
+        shifterButtonMask |= ReadButton(mDefinition.gear1Button) ? (1 << 0) : 0;
+        shifterButtonMask |= ReadButton(mDefinition.gear2Button) ? (1 << 1) : 0;
+        shifterButtonMask |= ReadButton(mDefinition.gear3Button) ? (1 << 2) : 0;
+        shifterButtonMask |= ReadButton(mDefinition.gear4Button) ? (1 << 3) : 0;
+        shifterButtonMask |= ReadButton(mDefinition.gear5Button) ? (1 << 4) : 0;
+        shifterButtonMask |= ReadButton(mDefinition.gear6Button) ? (1 << 5) : 0;
+        shifterButtonMask |= ReadButton(mDefinition.reverseButton) ? (1 << 6) : 0;
+
         if (ReadButton(mDefinition.gear1Button)) {
-            reading.requestedGear = 1;
+            rawRequestedGear = 1;
         } else if (ReadButton(mDefinition.gear2Button)) {
-            reading.requestedGear = 2;
+            rawRequestedGear = 2;
         } else if (ReadButton(mDefinition.gear3Button)) {
-            reading.requestedGear = 3;
+            rawRequestedGear = 3;
         } else if (ReadButton(mDefinition.gear4Button)) {
-            reading.requestedGear = 4;
+            rawRequestedGear = 4;
         } else if (ReadButton(mDefinition.gear5Button)) {
-            reading.requestedGear = 5;
+            rawRequestedGear = 5;
         } else if (ReadButton(mDefinition.gear6Button)) {
-            reading.requestedGear = 6;
+            rawRequestedGear = 6;
         } else if (ReadButton(mDefinition.reverseButton)) {
-            reading.requestedGear = WHEEL_GEAR_REVERSE;
-        } else if (mShifterWasInGear) {
-            reading.requestedGear = WHEEL_GEAR_NEUTRAL;
+            rawRequestedGear = WHEEL_GEAR_REVERSE;
+        }
+
+        int32_t pressedGearCount = 0;
+        for (int32_t i = 0; i < 7; i++) {
+            pressedGearCount += (shifterButtonMask & (1 << i)) != 0 ? 1 : 0;
+        }
+        if (pressedGearCount > 1) {
+            rawRequestedGear = WHEEL_GEAR_NONE;
+        }
+        reading.requestedGear = SmoothWheelShifterGear(rawRequestedGear);
+        if (shifterButtonMask != mLastShifterButtonMask || reading.requestedGear != mLastRequestedGear) {
+            CVarSetInteger("gArcadeKart.DebugShifterButtonMask", shifterButtonMask);
+            CVarSetInteger("gArcadeKart.DebugShifterRequestedGear", reading.requestedGear);
+            CVarSetInteger("gArcadeKart.DebugShifterPressedGearCount", pressedGearCount);
+            if (pressedGearCount > 1) {
+                SPDLOG_WARN("Wheel shifter {} reports multiple gears at once: mask=0x{:02X}, rawGear={}, smoothedGear={}",
+                            mDefinition.name, shifterButtonMask, rawRequestedGear, reading.requestedGear);
+            } else {
+                SPDLOG_INFO("Wheel shifter {} mask=0x{:02X}, rawGear={}, smoothedGear={}", mDefinition.name,
+                            shifterButtonMask, rawRequestedGear, reading.requestedGear);
+            }
+            mLastShifterButtonMask = shifterButtonMask;
+            mLastRequestedGear = reading.requestedGear;
         }
 
         mShifterWasInGear = reading.requestedGear > WHEEL_GEAR_NEUTRAL ||
@@ -719,13 +998,22 @@ WheelReading WheelDeviceManager::ReadPlayerOneWheel() {
     return mergedReading;
 }
 
-void WheelDeviceManager::UpdatePlayerOneForceFeedback(float speedKmh, float slopeSteeringForce, bool grounded,
-                                                      bool hitByItem, bool hitByLightning, uint16_t surfaceType,
-                                                      int16_t courseId) {
+void WheelDeviceManager::UpdatePlayerOneMenuForceFeedback() {
     RefreshDevices();
 
-    WheelForceFeedbackState state = { speedKmh, slopeSteeringForce, grounded, hitByItem, hitByLightning, surfaceType,
-                                      courseId };
+    WheelForceFeedbackState state = { 0.0f, 0.0f, 1.0f, true, false, false, SURFACE_ASPHALT, -1, true };
+    for (auto& device : mDevices) {
+        device.UpdateForceFeedback(state);
+    }
+}
+
+void WheelDeviceManager::UpdatePlayerOneForceFeedback(float speedKmh, float slopeSteeringForce, bool grounded,
+                                                      bool hitByItem, bool hitByLightning, uint16_t surfaceType,
+                                                      int16_t courseId, float steeringSpringMultiplier) {
+    RefreshDevices();
+
+    WheelForceFeedbackState state = { speedKmh, slopeSteeringForce, steeringSpringMultiplier, grounded, hitByItem,
+                                      hitByLightning, surfaceType, courseId, false };
     for (auto& device : mDevices) {
         device.UpdateForceFeedback(state);
     }

@@ -63,11 +63,13 @@ struct WheelReading {
 struct WheelForceFeedbackState {
     float speedKmh;
     float slopeSteeringForce;
+    float steeringSpringMultiplier;
     bool grounded;
     bool hitByItem;
     bool hitByLightning;
     uint16_t surfaceType;
     int16_t courseId;
+    bool menuMode;
 };
 
 class WheelDevice {
@@ -82,7 +84,8 @@ class WheelDevice {
 
   private:
     void InitializeHaptics();
-    void UpdateSteeringWeight(float speedKmh, bool grounded);
+    void UpdateProfilerCenteringSpring(const WheelForceFeedbackState& state, float speedRatio);
+    void UpdateSteeringWeight(const WheelForceFeedbackState& state);
     void UpdateSurfaceRumble(const WheelForceFeedbackState& state);
     void UpdateTerrainSteeringKnock(const WheelForceFeedbackState& state);
     void UpdateCoarseTerrainSteeringKnock(const WheelForceFeedbackState& state);
@@ -90,6 +93,7 @@ class WheelDevice {
     void PlayPeriodicFeedback(float strength, uint32_t durationMs, uint16_t periodMs);
     void PlayConstantSteeringKick(float strength, uint32_t durationMs);
     void PlaySignedConstantSteeringForce(float signedStrength, uint32_t durationMs, int32_t& effectId);
+    int32_t SmoothWheelShifterGear(int32_t rawGear);
     float ReadSignedAxis(int32_t axisIndex) const;
     float ReadPositiveAxis(int32_t axisIndex) const;
     float ReadPedalAxis(int32_t axisIndex, bool inverted) const;
@@ -111,6 +115,13 @@ class WheelDevice {
     uint32_t mFeedbackNoiseState;
     float mLastSteeringInput;
     int32_t mTerrainKickDirection;
+    int32_t mLastProfilerSpringPercent;
+    int32_t mLastShifterButtonMask;
+    int32_t mLastRequestedGear;
+    int32_t mShifterGearHistory[8];
+    uint32_t mShifterGearHistoryIndex;
+    uint32_t mShifterGearHistoryCount;
+    uint32_t mNextProfilerSpringUpdateTick;
     bool mSupportsSteeringWeight;
     bool mSupportsConstantForce;
     bool mSupportsPeriodic;
@@ -124,8 +135,10 @@ class WheelDeviceManager {
     static WheelDeviceManager& Instance();
 
     WheelReading ReadPlayerOneWheel();
+    void UpdatePlayerOneMenuForceFeedback();
     void UpdatePlayerOneForceFeedback(float speedKmh, float slopeSteeringForce, bool grounded, bool hitByItem,
-                                      bool hitByLightning, uint16_t surfaceType, int16_t courseId);
+                                      bool hitByLightning, uint16_t surfaceType, int16_t courseId,
+                                      float steeringSpringMultiplier);
 
   private:
     WheelDeviceManager();

@@ -3,6 +3,10 @@
 #include "ship/window/gui/Gui.h"
 
 #include <cstring>
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdio>
 #include <utility>
 #include <string>
 #include <vector>
@@ -48,6 +52,158 @@
 IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 #endif
+
+namespace {
+struct ArcadeKartPostFxView {
+    int playerIndex;
+    ImVec2 minUv;
+    ImVec2 maxUv;
+    ImVec2 minPos;
+    ImVec2 maxPos;
+};
+
+static float ArcadeKartClamp01(float value) {
+    return std::clamp(value, 0.0f, 1.0f);
+}
+
+static float ArcadeKartGetPlayerCVar(const char* prefix, int playerIndex, const char* suffix, float defaultValue) {
+    char key[96];
+    snprintf(key, sizeof(key), "%s.Player%d.%s", prefix, playerIndex + 1, suffix);
+    return Ship::Context::GetInstance()->GetConsoleVariables()->GetFloat(key, defaultValue);
+}
+
+static int ArcadeKartGetPostFxViews(std::array<ArcadeKartPostFxView, 4>& views, const ImVec2& origin,
+                                    const ImVec2& size) {
+    const int screenMode =
+        Ship::Context::GetInstance()->GetConsoleVariables()->GetInteger("gArcadeKart.PostFx.ScreenMode", 0);
+
+    views[0] = { 0, ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f), origin, ImVec2(origin.x + size.x, origin.y + size.y) };
+
+    if (screenMode == 1) {
+        views[0] = { 0, ImVec2(0.0f, 0.0f), ImVec2(1.0f, 0.5f), origin,
+                     ImVec2(origin.x + size.x, origin.y + (size.y * 0.5f)) };
+        views[1] = { 1, ImVec2(0.0f, 0.5f), ImVec2(1.0f, 1.0f), ImVec2(origin.x, origin.y + (size.y * 0.5f)),
+                     ImVec2(origin.x + size.x, origin.y + size.y) };
+        return 2;
+    }
+
+    if (screenMode == 2) {
+        views[0] = { 0, ImVec2(0.0f, 0.0f), ImVec2(0.5f, 1.0f), origin,
+                     ImVec2(origin.x + (size.x * 0.5f), origin.y + size.y) };
+        views[1] = { 1, ImVec2(0.5f, 0.0f), ImVec2(1.0f, 1.0f), ImVec2(origin.x + (size.x * 0.5f), origin.y),
+                     ImVec2(origin.x + size.x, origin.y + size.y) };
+        return 2;
+    }
+
+    if (screenMode == 3) {
+        views[0] = { 0, ImVec2(0.0f, 0.0f), ImVec2(0.5f, 0.5f), origin,
+                     ImVec2(origin.x + (size.x * 0.5f), origin.y + (size.y * 0.5f)) };
+        views[1] = { 1, ImVec2(0.5f, 0.0f), ImVec2(1.0f, 0.5f), ImVec2(origin.x + (size.x * 0.5f), origin.y),
+                     ImVec2(origin.x + size.x, origin.y + (size.y * 0.5f)) };
+        views[2] = { 2, ImVec2(0.0f, 0.5f), ImVec2(0.5f, 1.0f), ImVec2(origin.x, origin.y + (size.y * 0.5f)),
+                     ImVec2(origin.x + (size.x * 0.5f), origin.y + size.y) };
+        views[3] = { 3, ImVec2(0.5f, 0.5f), ImVec2(1.0f, 1.0f),
+                     ImVec2(origin.x + (size.x * 0.5f), origin.y + (size.y * 0.5f)),
+                     ImVec2(origin.x + size.x, origin.y + size.y) };
+        return 4;
+    }
+
+    return 1;
+}
+
+static ImVec2 ArcadeKartWarpPoint(const ArcadeKartPostFxView& view, float x, float y, float barrelStrength,
+                                  float overscanPercent, float shakeX, float shakeY, float extraScale) {
+    const ImVec2 center((view.minPos.x + view.maxPos.x) * 0.5f, (view.minPos.y + view.maxPos.y) * 0.5f);
+    const float width = view.maxPos.x - view.minPos.x;
+    const float height = view.maxPos.y - view.minPos.y;
+    const float nx = (x * 2.0f) - 1.0f;
+    const float ny = (y * 2.0f) - 1.0f;
+    const float r2 = (nx * nx) + (ny * ny);
+    const float warpScale = (1.0f + overscanPercent + extraScale) * (1.0f + (barrelStrength * r2));
+
+    return ImVec2(center.x + ((nx * width * 0.5f) * warpScale) + shakeX,
+                  center.y + ((ny * height * 0.5f) * warpScale) + shakeY);
+}
+
+static void ArcadeKartDrawWarpedView(ImDrawList* drawList, ImTextureID textureId, const ArcadeKartPostFxView& view,
+                                     float barrelStrength, float overscanPercent, float shakeX, float shakeY,
+                                     float extraScale, ImU32 tint) {
+    constexpr int kGrid = 14;
+
+    drawList->PushClipRect(view.minPos, view.maxPos, true);
+    for (int y = 0; y < kGrid; y++) {
+        const float y0 = static_cast<float>(y) / kGrid;
+        const float y1 = static_cast<float>(y + 1) / kGrid;
+        const float v0 = view.minUv.y + ((view.maxUv.y - view.minUv.y) * y0);
+        const float v1 = view.minUv.y + ((view.maxUv.y - view.minUv.y) * y1);
+
+        for (int x = 0; x < kGrid; x++) {
+            const float x0 = static_cast<float>(x) / kGrid;
+            const float x1 = static_cast<float>(x + 1) / kGrid;
+            const float u0 = view.minUv.x + ((view.maxUv.x - view.minUv.x) * x0);
+            const float u1 = view.minUv.x + ((view.maxUv.x - view.minUv.x) * x1);
+
+            drawList->AddImageQuad(textureId, ArcadeKartWarpPoint(view, x0, y0, barrelStrength, overscanPercent, shakeX,
+                                                                  shakeY, extraScale),
+                                   ArcadeKartWarpPoint(view, x1, y0, barrelStrength, overscanPercent, shakeX, shakeY,
+                                                       extraScale),
+                                   ArcadeKartWarpPoint(view, x1, y1, barrelStrength, overscanPercent, shakeX, shakeY,
+                                                       extraScale),
+                                   ArcadeKartWarpPoint(view, x0, y1, barrelStrength, overscanPercent, shakeX, shakeY,
+                                                       extraScale),
+                                   ImVec2(u0, v0), ImVec2(u1, v0), ImVec2(u1, v1), ImVec2(u0, v1), tint);
+        }
+    }
+    drawList->PopClipRect();
+}
+
+static void ArcadeKartDrawPostFxGame(ImTextureID textureId, const ImVec2& origin, const ImVec2& size) {
+    auto cvars = Ship::Context::GetInstance()->GetConsoleVariables();
+    const float overscanPercent =
+        std::clamp(cvars->GetFloat("gArcadeKart.PostFx.OverscanPercent", 0.15f), 0.0f, 0.35f);
+    const float baseBarrel = std::clamp(cvars->GetFloat("gArcadeKart.PostFx.BarrelStrength", 0.035f), 0.0f, 0.35f);
+    const float speedBarrel = std::clamp(cvars->GetFloat("gArcadeKart.PostFx.SpeedBarrelStrength", 0.085f), 0.0f, 0.5f);
+    const float boostBarrel = std::clamp(cvars->GetFloat("gArcadeKart.PostFx.BoostBarrelStrength", 0.12f), 0.0f, 0.65f);
+    const float motionBlur = std::clamp(cvars->GetFloat("gArcadeKart.PostFx.MotionBlur", 0.28f), 0.0f, 1.0f);
+    const float shakeStrength = std::clamp(cvars->GetFloat("gArcadeKart.PostFx.ShakeStrength", 0.018f), 0.0f, 0.1f);
+    const double time = ImGui::GetTime();
+    std::array<ArcadeKartPostFxView, 4> views;
+    const int viewCount = ArcadeKartGetPostFxViews(views, origin, size);
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+    for (int i = 0; i < viewCount; i++) {
+        const ArcadeKartPostFxView& view = views[i];
+        const float speedRatio =
+            ArcadeKartClamp01(ArcadeKartGetPlayerCVar("gArcadeKart.PostFx", view.playerIndex, "SpeedRatio", 0.0f));
+        const float boostAmount =
+            ArcadeKartClamp01(ArcadeKartGetPlayerCVar("gArcadeKart.PostFx", view.playerIndex, "BoostAmount", 0.0f));
+        const float shakeAmount =
+            ArcadeKartClamp01(ArcadeKartGetPlayerCVar("gArcadeKart.PostFx", view.playerIndex, "ShakeAmount", 0.0f));
+        const float speedCurve = std::pow(speedRatio, 1.35f);
+        const float boostCurve = std::pow(boostAmount, 0.70f);
+        const float intensity = ArcadeKartClamp01((speedCurve * 0.65f) + boostCurve);
+        const float barrelStrength = baseBarrel + (speedBarrel * speedCurve) + (boostBarrel * boostCurve);
+        const float viewWidth = view.maxPos.x - view.minPos.x;
+        const float viewHeight = view.maxPos.y - view.minPos.y;
+        const float shakePixels = std::min(viewWidth, viewHeight) * shakeStrength * shakeAmount;
+        const float shakeX = std::sin((time * 83.0) + (view.playerIndex * 1.7)) * shakePixels;
+        const float shakeY = std::cos((time * 67.0) + (view.playerIndex * 2.3)) * shakePixels;
+        const int blurAlpha = static_cast<int>(std::clamp(42.0f * motionBlur * intensity, 0.0f, 70.0f));
+
+        if (blurAlpha > 0) {
+            ArcadeKartDrawWarpedView(drawList, textureId, view, barrelStrength * 0.65f, overscanPercent, shakeX * 0.55f,
+                                     shakeY * 0.55f, 0.018f + (0.030f * intensity),
+                                     IM_COL32(255, 255, 255, blurAlpha));
+            ArcadeKartDrawWarpedView(drawList, textureId, view, barrelStrength * 0.45f, overscanPercent, -shakeX * 0.35f,
+                                     -shakeY * 0.35f, 0.032f + (0.050f * intensity),
+                                     IM_COL32(255, 255, 255, blurAlpha / 2));
+        }
+
+        ArcadeKartDrawWarpedView(drawList, textureId, view, barrelStrength, overscanPercent, shakeX, shakeY, 0.0f,
+                                 IM_COL32_WHITE);
+    }
+}
+} // namespace
 
 namespace Ship {
 #define TOGGLE_BTN ImGuiKey_F1
@@ -718,7 +874,13 @@ void Gui::DrawGame() {
     uintptr_t fb = Ship::Context::GetInstance()->GetWindow()->GetGfxFrameBuffer();
     if (fb) {
         ImGui::SetCursorPos(pos);
-        ImGui::Image(reinterpret_cast<ImTextureID>(fb), size);
+        ImVec2 imagePos = ImGui::GetCursorScreenPos();
+        if (Ship::Context::GetInstance()->GetConsoleVariables()->GetInteger("gArcadeKart.PostFx.Enabled", 1) != 0) {
+            ArcadeKartDrawPostFxGame(reinterpret_cast<ImTextureID>(fb), imagePos, size);
+            ImGui::Dummy(size);
+        } else {
+            ImGui::Image(reinterpret_cast<ImTextureID>(fb), size);
+        }
     }
 
     ImGui::End();
