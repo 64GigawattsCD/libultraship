@@ -166,6 +166,8 @@ static void ArcadeKartDrawPostFxGame(ImTextureID textureId, const ImVec2& origin
     const float boostBarrel = std::clamp(cvars->GetFloat("gArcadeKart.PostFx.BoostBarrelStrength", 0.12f), 0.0f, 0.65f);
     const float motionBlur = std::clamp(cvars->GetFloat("gArcadeKart.PostFx.MotionBlur", 0.28f), 0.0f, 1.0f);
     const float shakeStrength = std::clamp(cvars->GetFloat("gArcadeKart.PostFx.ShakeStrength", 0.018f), 0.0f, 0.1f);
+    const bool manualOverride = cvars->GetInteger("gArcadeKart.PostFx.ManualOverride", 0) != 0;
+    const float manualIntensity = ArcadeKartClamp01(cvars->GetFloat("gArcadeKart.PostFx.ManualIntensity", 0.0f));
     const double time = ImGui::GetTime();
     std::array<ArcadeKartPostFxView, 4> views;
     const int viewCount = ArcadeKartGetPostFxViews(views, origin, size);
@@ -174,11 +176,17 @@ static void ArcadeKartDrawPostFxGame(ImTextureID textureId, const ImVec2& origin
     for (int i = 0; i < viewCount; i++) {
         const ArcadeKartPostFxView& view = views[i];
         const float speedRatio =
-            ArcadeKartClamp01(ArcadeKartGetPlayerCVar("gArcadeKart.PostFx", view.playerIndex, "SpeedRatio", 0.0f));
+            manualOverride
+                ? manualIntensity
+                : ArcadeKartClamp01(ArcadeKartGetPlayerCVar("gArcadeKart.PostFx", view.playerIndex, "SpeedRatio", 0.0f));
         const float boostAmount =
-            ArcadeKartClamp01(ArcadeKartGetPlayerCVar("gArcadeKart.PostFx", view.playerIndex, "BoostAmount", 0.0f));
+            manualOverride
+                ? manualIntensity
+                : ArcadeKartClamp01(ArcadeKartGetPlayerCVar("gArcadeKart.PostFx", view.playerIndex, "BoostAmount", 0.0f));
         const float shakeAmount =
-            ArcadeKartClamp01(ArcadeKartGetPlayerCVar("gArcadeKart.PostFx", view.playerIndex, "ShakeAmount", 0.0f));
+            manualOverride
+                ? manualIntensity
+                : ArcadeKartClamp01(ArcadeKartGetPlayerCVar("gArcadeKart.PostFx", view.playerIndex, "ShakeAmount", 0.0f));
         const float speedCurve = std::pow(speedRatio, 1.35f);
         const float boostCurve = std::pow(boostAmount, 0.70f);
         const float intensity = ArcadeKartClamp01((speedCurve * 0.65f) + boostCurve);
