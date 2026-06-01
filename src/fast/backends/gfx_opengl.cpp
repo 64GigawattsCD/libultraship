@@ -854,6 +854,10 @@ void GfxRenderingAPIOGL::ResolveMSAAColorBuffer(int fb_id_target, int fb_id_sour
 }
 
 void* GfxRenderingAPIOGL::GetFramebufferTextureId(int fb_id) {
+    if (fb_id < 0 || fb_id >= (int)mFrameBuffers.size()) {
+        return nullptr;
+    }
+
     return (void*)(uintptr_t)mFrameBuffers[fb_id].clrbuf;
 }
 

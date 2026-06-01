@@ -928,7 +928,16 @@ void GfxRenderingAPIDX11::ResolveMSAAColorBuffer(int fb_id_target, int fb_id_sou
 }
 
 void* GfxRenderingAPIDX11::GetFramebufferTextureId(int fb_id) {
-    return (void*)mTextures[mFrameBuffers[fb_id].texture_id].resource_view.Get();
+    if (fb_id < 0 || fb_id >= (int)mFrameBuffers.size()) {
+        return nullptr;
+    }
+
+    const uint32_t textureId = mFrameBuffers[fb_id].texture_id;
+    if (textureId >= mTextures.size()) {
+        return nullptr;
+    }
+
+    return (void*)mTextures[textureId].resource_view.Get();
 }
 
 void GfxRenderingAPIDX11::SelectTextureFb(int fbID) {

@@ -4754,6 +4754,16 @@ extern "C" int gfx_create_framebuffer(uint32_t width, uint32_t height, uint32_t 
     return Fast::mInstance.lock().get()->CreateFrameBuffer(width, height, native_width, native_height, resize);
 }
 
+extern "C" uintptr_t gfx_get_framebuffer_texture_id(int framebufferId) {
+    auto instance = Fast::mInstance.lock();
+
+    if (instance == nullptr || framebufferId < 0) {
+        return 0;
+    }
+
+    return (uintptr_t) instance->GetCurrentRenderingAPI()->GetFramebufferTextureId(framebufferId);
+}
+
 extern "C" void gfx_texture_cache_clear() {
     Fast::mInstance.lock().get()->TextureCacheClear();
 }

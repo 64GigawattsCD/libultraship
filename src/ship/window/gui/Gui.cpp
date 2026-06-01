@@ -20,6 +20,8 @@
 #include "ship/window/gui/Fonts.h"
 #include "ship/window/gui/resource/GuiTextureFactory.h"
 
+extern "C" uintptr_t gfx_get_framebuffer_texture_id(int framebufferId);
+
 #include "libultraship/window/gui/GfxDebuggerWindow.h"
 #include "fast/Fast3dWindow.h"
 #ifdef __APPLE__
@@ -45,6 +47,8 @@
 #endif
 
 #if defined(ENABLE_DX11) || defined(ENABLE_DX12)
+#include <d3dcompiler.h>
+#include <d3d11.h>
 #include <imgui_impl_dx11.h>
 #include <imgui_impl_win32.h>
 
@@ -61,6 +65,32 @@ struct ArcadeKartPostFxView {
     ImVec2 minPos;
     ImVec2 maxPos;
 };
+
+#if defined(ENABLE_DX11) || defined(ENABLE_DX12)
+struct ArcadeKartScenePostFxShaderConstants {
+    float uvMinX;
+    float uvMinY;
+    float uvSizeX;
+    float uvSizeY;
+    float barrelStrength;
+    float overscanPercent;
+    float blurStrength;
+    float padding0;
+    float shakeUvX;
+    float shakeUvY;
+    float padding1;
+    float padding2;
+};
+
+struct ArcadeKartScenePostFxDrawData {
+    ArcadeKartScenePostFxShaderConstants constants;
+};
+
+static bool ArcadeKartShouldUseDx11PostFxShader();
+static void ArcadeKartDrawDx11PostFxView(ImDrawList* drawList, ImTextureID textureId,
+                                         const ArcadeKartPostFxView& view,
+                                         const ArcadeKartScenePostFxShaderConstants& constants);
+#endif
 
 static float ArcadeKartClamp01(float value) {
     return std::clamp(value, 0.0f, 1.0f);
@@ -166,6 +196,9 @@ static void ArcadeKartDrawPostFxGame(ImTextureID textureId, const ImVec2& origin
     const float boostBarrel = std::clamp(cvars->GetFloat("gArcadeKart.PostFx.BoostBarrelStrength", 0.12f), 0.0f, 0.65f);
     const float motionBlur = std::clamp(cvars->GetFloat("gArcadeKart.PostFx.MotionBlur", 0.28f), 0.0f, 1.0f);
     const float shakeStrength = std::clamp(cvars->GetFloat("gArcadeKart.PostFx.ShakeStrength", 0.018f), 0.0f, 0.1f);
+    const float shakeIdleScale = std::clamp(cvars->GetFloat("gArcadeKart.PostFx.ShakeIdleScale", 0.05f), 0.0f, 1.0f);
+    const float shakeFullSpeedRatio =
+        std::clamp(cvars->GetFloat("gArcadeKart.PostFx.ShakeFullSpeedRatio", 1.0f), 0.05f, 1.5f);
     const bool manualOverride = cvars->GetInteger("gArcadeKart.PostFx.ManualOverride", 0) != 0;
     const float manualIntensity = ArcadeKartClamp01(cvars->GetFloat("gArcadeKart.PostFx.ManualIntensity", 0.0f));
     const double time = ImGui::GetTime();
@@ -193,9 +226,27 @@ static void ArcadeKartDrawPostFxGame(ImTextureID textureId, const ImVec2& origin
         const float barrelStrength = baseBarrel + (speedBarrel * speedCurve) + (boostBarrel * boostCurve);
         const float viewWidth = view.maxPos.x - view.minPos.x;
         const float viewHeight = view.maxPos.y - view.minPos.y;
-        const float shakePixels = std::min(viewWidth, viewHeight) * shakeStrength * shakeAmount;
-        const float shakeX = std::sin((time * 83.0) + (view.playerIndex * 1.7)) * shakePixels;
-        const float shakeY = std::cos((time * 67.0) + (view.playerIndex * 2.3)) * shakePixels;
+        const float shakeSpeedRatio = ArcadeKartClamp01(speedRatio / shakeFullSpeedRatio);
+        const float shakeSpeedScale = shakeIdleScale + ((1.0f - shakeIdleScale) * shakeSpeedRatio);
+        const float shakePixels = std::min(viewWidth, viewHeight) * shakeStrength * shakeAmount * shakeSpeedScale;
+        const float shakeX = static_cast<float>(std::sin((time * 83.0) + (view.playerIndex * 1.7))) * shakePixels;
+        const float shakeY = static_cast<float>(std::cos((time * 67.0) + (view.playerIndex * 2.3))) * shakePixels;
+#if defined(ENABLE_DX11) || defined(ENABLE_DX12)
+        if (ArcadeKartShouldUseDx11PostFxShader()) {
+            ArcadeKartScenePostFxShaderConstants constants = {};
+            constants.uvMinX = view.minUv.x;
+            constants.uvMinY = view.minUv.y;
+            constants.uvSizeX = view.maxUv.x - view.minUv.x;
+            constants.uvSizeY = view.maxUv.y - view.minUv.y;
+            constants.barrelStrength = barrelStrength;
+            constants.overscanPercent = overscanPercent;
+            constants.blurStrength = std::clamp(motionBlur * intensity, 0.0f, 1.0f);
+            constants.shakeUvX = constants.uvSizeX * (-shakeX / std::max(viewWidth, 1.0f));
+            constants.shakeUvY = constants.uvSizeY * (-shakeY / std::max(viewHeight, 1.0f));
+            ArcadeKartDrawDx11PostFxView(drawList, textureId, view, constants);
+            continue;
+        }
+#endif
         const int blurAlpha = static_cast<int>(std::clamp(42.0f * motionBlur * intensity, 0.0f, 70.0f));
 
         if (blurAlpha > 0) {
@@ -210,6 +261,265 @@ static void ArcadeKartDrawPostFxGame(ImTextureID textureId, const ImVec2& origin
         ArcadeKartDrawWarpedView(drawList, textureId, view, barrelStrength, overscanPercent, shakeX, shakeY, 0.0f,
                                  IM_COL32_WHITE);
     }
+}
+
+#if defined(ENABLE_DX11) || defined(ENABLE_DX12)
+static std::array<ArcadeKartScenePostFxDrawData, 4> sArcadeKartScenePostFxDrawData;
+static ID3D11Device* sArcadeKartDx11PostFxDevice = nullptr;
+static ID3D11PixelShader* sArcadeKartScenePostFxPixelShader = nullptr;
+static ID3D11PixelShader* sArcadeKartHudCompositePixelShader = nullptr;
+static ID3D11Buffer* sArcadeKartScenePostFxConstantBuffer = nullptr;
+static ID3D11BlendState* sArcadeKartHudCompositeBlendState = nullptr;
+
+template <typename T> static void ArcadeKartReleaseDx11Object(T*& object) {
+    if (object != nullptr) {
+        object->Release();
+        object = nullptr;
+    }
+}
+
+static void ArcadeKartResetDx11PostFxResources(ID3D11Device* device) {
+    if (sArcadeKartDx11PostFxDevice == device) {
+        return;
+    }
+
+    ArcadeKartReleaseDx11Object(sArcadeKartScenePostFxPixelShader);
+    ArcadeKartReleaseDx11Object(sArcadeKartHudCompositePixelShader);
+    ArcadeKartReleaseDx11Object(sArcadeKartScenePostFxConstantBuffer);
+    ArcadeKartReleaseDx11Object(sArcadeKartHudCompositeBlendState);
+    sArcadeKartDx11PostFxDevice = device;
+}
+
+static bool ArcadeKartShouldUseDx11PostFxShader() {
+    return Ship::Context::GetInstance()->GetConfig()->GetWindowBackend() == Ship::WindowBackend::FAST3D_DXGI_DX11;
+}
+
+static bool ArcadeKartCreateDx11PixelShader(ID3D11Device* device, const char* shaderSource,
+                                            ID3D11PixelShader** pixelShader) {
+    ID3DBlob* shaderBlob = nullptr;
+    ID3DBlob* errorBlob = nullptr;
+    const UINT compileFlags =
+#if defined(_DEBUG)
+        D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#else
+        D3DCOMPILE_ENABLE_STRICTNESS;
+#endif
+
+    const HRESULT compileResult =
+        D3DCompile(shaderSource, strlen(shaderSource), nullptr, nullptr, nullptr, "main", "ps_4_0", compileFlags, 0,
+                   &shaderBlob, &errorBlob);
+
+    if (errorBlob != nullptr) {
+        errorBlob->Release();
+    }
+
+    if (FAILED(compileResult) || shaderBlob == nullptr) {
+        return false;
+    }
+
+    const HRESULT shaderResult =
+        device->CreatePixelShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, pixelShader);
+    shaderBlob->Release();
+    return SUCCEEDED(shaderResult);
+}
+
+static bool ArcadeKartEnsureDx11PostFxResources(ImGui_ImplDX11_RenderState* renderState) {
+    if (renderState == nullptr || renderState->Device == nullptr || renderState->DeviceContext == nullptr) {
+        return false;
+    }
+
+    ArcadeKartResetDx11PostFxResources(renderState->Device);
+
+    if (sArcadeKartScenePostFxPixelShader == nullptr) {
+        static const char* kScenePostFxShader =
+            "cbuffer ArcadeKartPostFxBuffer : register(b1) {"
+            "  float4 uvRect;"
+            "  float4 params;"
+            "  float4 offsets;"
+            "};"
+            "struct PS_INPUT {"
+            "  float4 pos : SV_POSITION;"
+            "  float4 col : COLOR0;"
+            "  float2 uv : TEXCOORD0;"
+            "};"
+            "sampler sampler0;"
+            "Texture2D texture0;"
+            "float2 ArcadeKartSampleUv(float2 sourceLocal) {"
+            "  float2 uv = uvRect.xy + (saturate(sourceLocal) * uvRect.zw) + offsets.xy;"
+            "  return clamp(uv, uvRect.xy, uvRect.xy + uvRect.zw);"
+            "}"
+            "float4 main(PS_INPUT input) : SV_Target {"
+            "  float2 uvSize = max(uvRect.zw, float2(0.0001f, 0.0001f));"
+            "  float2 local = saturate((input.uv - uvRect.xy) / uvSize);"
+            "  float2 centered = (local * 2.0f) - 1.0f;"
+            "  float r2 = dot(centered, centered);"
+            "  float scale = max(1.0f + params.y + (params.x * r2), 0.001f);"
+            "  float2 sourceLocal = ((centered / scale) * 0.5f) + 0.5f;"
+            "  float blur = saturate(params.z);"
+            "  float2 radialBlur = centered * blur * 0.018f;"
+            "  float4 color = texture0.Sample(sampler0, ArcadeKartSampleUv(sourceLocal)) * 0.70f;"
+            "  color += texture0.Sample(sampler0, ArcadeKartSampleUv(sourceLocal - radialBlur)) * 0.18f;"
+            "  color += texture0.Sample(sampler0, ArcadeKartSampleUv(sourceLocal + radialBlur)) * 0.12f;"
+            "  return float4(color.rgb * input.col.rgb, input.col.a);"
+            "}";
+
+        if (!ArcadeKartCreateDx11PixelShader(renderState->Device, kScenePostFxShader,
+                                             &sArcadeKartScenePostFxPixelShader)) {
+            return false;
+        }
+    }
+
+    if (sArcadeKartHudCompositePixelShader == nullptr) {
+        static const char* kHudCompositeShader =
+            "struct PS_INPUT {"
+            "  float4 pos : SV_POSITION;"
+            "  float4 col : COLOR0;"
+            "  float2 uv : TEXCOORD0;"
+            "};"
+            "sampler sampler0;"
+            "Texture2D texture0;"
+            "float4 main(PS_INPUT input) : SV_Target {"
+            "  float4 texel = texture0.Sample(sampler0, input.uv) * input.col;"
+            "  float maxChannel = max(texel.r, max(texel.g, texel.b));"
+            "  float keyedAlpha = saturate((maxChannel - 0.0125f) * 18.0f);"
+            "  keyedAlpha *= saturate(texel.a * 64.0f);"
+            "  return float4(texel.rgb, keyedAlpha * input.col.a);"
+            "}";
+
+        if (!ArcadeKartCreateDx11PixelShader(renderState->Device, kHudCompositeShader,
+                                             &sArcadeKartHudCompositePixelShader)) {
+            return false;
+        }
+    }
+
+    if (sArcadeKartScenePostFxConstantBuffer == nullptr) {
+        D3D11_BUFFER_DESC bufferDesc = {};
+        bufferDesc.ByteWidth = sizeof(ArcadeKartScenePostFxShaderConstants);
+        bufferDesc.Usage = D3D11_USAGE_DYNAMIC;
+        bufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+        if (renderState->Device->CreateBuffer(&bufferDesc, nullptr, &sArcadeKartScenePostFxConstantBuffer) != S_OK) {
+            return false;
+        }
+    }
+
+    if (sArcadeKartHudCompositeBlendState == nullptr) {
+        D3D11_BLEND_DESC blendDesc = {};
+        blendDesc.RenderTarget[0].BlendEnable = true;
+        blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+        blendDesc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+        blendDesc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+        blendDesc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+        blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+        blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+
+        if (renderState->Device->CreateBlendState(&blendDesc, &sArcadeKartHudCompositeBlendState) != S_OK) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static void ArcadeKartSetScenePostFxShader(const ImDrawList*, const ImDrawCmd* cmd) {
+    auto* renderState = static_cast<ImGui_ImplDX11_RenderState*>(ImGui::GetPlatformIO().Renderer_RenderState);
+    const ArcadeKartScenePostFxDrawData* drawData =
+        static_cast<const ArcadeKartScenePostFxDrawData*>(cmd->UserCallbackData);
+
+    if (drawData == nullptr || !ArcadeKartEnsureDx11PostFxResources(renderState)) {
+        return;
+    }
+
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    if (renderState->DeviceContext->Map(sArcadeKartScenePostFxConstantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0,
+                                        &mapped) == S_OK) {
+        memcpy(mapped.pData, &drawData->constants, sizeof(drawData->constants));
+        renderState->DeviceContext->Unmap(sArcadeKartScenePostFxConstantBuffer, 0);
+    }
+
+    renderState->DeviceContext->PSSetShader(sArcadeKartScenePostFxPixelShader, nullptr, 0);
+    renderState->DeviceContext->PSSetConstantBuffers(1, 1, &sArcadeKartScenePostFxConstantBuffer);
+}
+
+static void ArcadeKartSetHudCompositeShader(const ImDrawList*, const ImDrawCmd*) {
+    auto* renderState = static_cast<ImGui_ImplDX11_RenderState*>(ImGui::GetPlatformIO().Renderer_RenderState);
+
+    if (!ArcadeKartEnsureDx11PostFxResources(renderState)) {
+        return;
+    }
+
+    const float blendFactor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    renderState->DeviceContext->PSSetShader(sArcadeKartHudCompositePixelShader, nullptr, 0);
+    renderState->DeviceContext->OMSetBlendState(sArcadeKartHudCompositeBlendState, blendFactor, 0xFFFFFFFF);
+}
+
+static void ArcadeKartDrawDx11PostFxView(ImDrawList* drawList, ImTextureID textureId,
+                                         const ArcadeKartPostFxView& view,
+                                         const ArcadeKartScenePostFxShaderConstants& constants) {
+    ArcadeKartScenePostFxDrawData& drawData =
+        sArcadeKartScenePostFxDrawData[std::clamp(view.playerIndex, 0, 3)];
+
+    drawData.constants = constants;
+    drawList->PushClipRect(view.minPos, view.maxPos, true);
+    drawList->AddCallback(ArcadeKartSetScenePostFxShader, &drawData);
+    drawList->AddImage(textureId, view.minPos, view.maxPos, view.minUv, view.maxUv, IM_COL32_WHITE);
+    drawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+    drawList->PopClipRect();
+}
+#endif
+
+static void ArcadeKartDrawHudLayer(ImTextureID textureId, const ImVec2& origin, const ImVec2& size) {
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const ImVec2 maxPos(origin.x + size.x, origin.y + size.y);
+    auto cvars = Ship::Context::GetInstance()->GetConsoleVariables();
+
+#if defined(ENABLE_DX11) || defined(ENABLE_DX12)
+    if (ArcadeKartShouldUseDx11PostFxShader()) {
+        if (cvars->GetInteger("gArcadeKart.PostFx.DebugHudAlphaBlend", 0) != 0) {
+            drawList->AddImage(textureId, origin, maxPos);
+            return;
+        }
+
+        std::array<ArcadeKartPostFxView, 4> views;
+        const int viewCount = ArcadeKartGetPostFxViews(views, origin, size);
+
+        drawList->AddCallback(ArcadeKartSetHudCompositeShader, nullptr);
+        for (int i = 0; i < viewCount; i++) {
+            drawList->PushClipRect(views[i].minPos, views[i].maxPos, true);
+            drawList->AddImage(textureId, views[i].minPos, views[i].maxPos, views[i].minUv, views[i].maxUv);
+            drawList->PopClipRect();
+        }
+        drawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+        return;
+    }
+#endif
+
+    drawList->AddImage(textureId, origin, maxPos);
+}
+
+static bool ArcadeKartDrawLayeredPostFxGame(const ImVec2& origin, const ImVec2& size) {
+    auto cvars = Ship::Context::GetInstance()->GetConsoleVariables();
+
+    if (cvars->GetInteger("gArcadeKart.PostFx.LayerHud", 1) == 0 ||
+        cvars->GetInteger("gArcadeKart.PostFx.LayeredHudActive", 0) == 0) {
+        return false;
+    }
+
+    const int sceneFramebufferId = cvars->GetInteger("gArcadeKart.PostFx.SceneFramebufferId", -1);
+    const int hudFramebufferId = cvars->GetInteger("gArcadeKart.PostFx.HudFramebufferId", -1);
+    const uintptr_t sceneFramebuffer = gfx_get_framebuffer_texture_id(sceneFramebufferId);
+    const uintptr_t hudFramebuffer = gfx_get_framebuffer_texture_id(hudFramebufferId);
+
+    if (sceneFramebuffer == 0 || hudFramebuffer == 0) {
+        cvars->SetInteger("gArcadeKart.PostFx.LayeredHudActive", 0);
+        return false;
+    }
+
+    ArcadeKartDrawPostFxGame(reinterpret_cast<ImTextureID>(sceneFramebuffer), origin, size);
+    ArcadeKartDrawHudLayer(reinterpret_cast<ImTextureID>(hudFramebuffer), origin, size);
+    return true;
 }
 } // namespace
 
@@ -880,15 +1190,17 @@ void Gui::DrawGame() {
         }
     }
     uintptr_t fb = Ship::Context::GetInstance()->GetWindow()->GetGfxFrameBuffer();
-    if (fb) {
-        ImGui::SetCursorPos(pos);
-        ImVec2 imagePos = ImGui::GetCursorScreenPos();
-        if (Ship::Context::GetInstance()->GetConsoleVariables()->GetInteger("gArcadeKart.PostFx.Enabled", 1) != 0) {
+    ImGui::SetCursorPos(pos);
+    ImVec2 imagePos = ImGui::GetCursorScreenPos();
+    if (Ship::Context::GetInstance()->GetConsoleVariables()->GetInteger("gArcadeKart.PostFx.Enabled", 1) != 0) {
+        if (ArcadeKartDrawLayeredPostFxGame(imagePos, size)) {
+            ImGui::Dummy(size);
+        } else if (fb) {
             ArcadeKartDrawPostFxGame(reinterpret_cast<ImTextureID>(fb), imagePos, size);
             ImGui::Dummy(size);
-        } else {
-            ImGui::Image(reinterpret_cast<ImTextureID>(fb), size);
         }
+    } else if (fb) {
+        ImGui::Image(reinterpret_cast<ImTextureID>(fb), size);
     }
 
     ImGui::End();

@@ -1013,7 +1013,16 @@ GfxRenderingAPIMetal::GetPixelDepth(int fb_id, const std::set<std::pair<float, f
 }
 
 void* GfxRenderingAPIMetal::GetFramebufferTextureId(int fb_id) {
-    return (void*)mTextures[mFramebuffers[fb_id].mTextureId].texture;
+    if (fb_id < 0 || fb_id >= (int)mFramebuffers.size()) {
+        return nullptr;
+    }
+
+    const uint32_t textureId = mFramebuffers[fb_id].mTextureId;
+    if (textureId >= mTextures.size()) {
+        return nullptr;
+    }
+
+    return (void*)mTextures[textureId].texture;
 }
 
 void GfxRenderingAPIMetal::SelectTextureFb(int fb_id) {

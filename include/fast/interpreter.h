@@ -529,3 +529,4 @@ const char* GfxGetOpcodeName(int8_t opcode);
 extern "C" void gfx_texture_cache_clear();
 extern "C" int gfx_create_framebuffer(uint32_t width, uint32_t height, uint32_t native_width, uint32_t native_height,
                                       uint8_t resize);
+extern "C" uintptr_t gfx_get_framebuffer_texture_id(int framebufferId);
