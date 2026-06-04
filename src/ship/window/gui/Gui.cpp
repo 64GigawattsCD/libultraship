@@ -270,6 +270,7 @@ static ID3D11PixelShader* sArcadeKartScenePostFxPixelShader = nullptr;
 static ID3D11PixelShader* sArcadeKartHudCompositePixelShader = nullptr;
 static ID3D11Buffer* sArcadeKartScenePostFxConstantBuffer = nullptr;
 static ID3D11BlendState* sArcadeKartHudCompositeBlendState = nullptr;
+static ID3D11SamplerState* sArcadeKartHudCompositeSamplerState = nullptr;
 
 template <typename T> static void ArcadeKartReleaseDx11Object(T*& object) {
     if (object != nullptr) {
@@ -287,6 +288,7 @@ static void ArcadeKartResetDx11PostFxResources(ID3D11Device* device) {
     ArcadeKartReleaseDx11Object(sArcadeKartHudCompositePixelShader);
     ArcadeKartReleaseDx11Object(sArcadeKartScenePostFxConstantBuffer);
     ArcadeKartReleaseDx11Object(sArcadeKartHudCompositeBlendState);
+    ArcadeKartReleaseDx11Object(sArcadeKartHudCompositeSamplerState);
     sArcadeKartDx11PostFxDevice = device;
 }
 
@@ -379,11 +381,17 @@ static bool ArcadeKartEnsureDx11PostFxResources(ImGui_ImplDX11_RenderState* rend
             "sampler sampler0;"
             "Texture2D texture0;"
             "float4 main(PS_INPUT input) : SV_Target {"
-            "  float4 texel = texture0.Sample(sampler0, input.uv) * input.col;"
-            "  float maxChannel = max(texel.r, max(texel.g, texel.b));"
-            "  float keyedAlpha = saturate((maxChannel - 0.0125f) * 18.0f);"
+            "  float4 texel = texture0.Sample(sampler0, input.uv);"
+            "  float3 keyColor = float3(1.0f, 0.0f, 1.0f);"
+            "  float keyDistance = distance(texel.rgb, keyColor);"
+            "  float keyedAlpha = smoothstep(0.035f, 0.18f, keyDistance);"
+            "  float3 color = texel.rgb;"
+            "  float magentaBalance = saturate(1.0f - abs(color.r - color.b) * 18.0f);"
+            "  float brightNeutralEdge = saturate((min(color.r, color.b) - 0.52f) * 4.0f) * magentaBalance;"
+            "  float greenDeficit = saturate((min(color.r, color.b) - color.g) * 3.0f);"
+            "  color.g = lerp(color.g, min(color.r, color.b), brightNeutralEdge * greenDeficit);"
             "  keyedAlpha *= saturate(texel.a * 64.0f);"
-            "  return float4(texel.rgb, keyedAlpha * input.col.a);"
+            "  return float4(color * input.col.rgb, keyedAlpha * input.col.a);"
             "}";
 
         if (!ArcadeKartCreateDx11PixelShader(renderState->Device, kHudCompositeShader,
@@ -420,6 +428,20 @@ static bool ArcadeKartEnsureDx11PostFxResources(ImGui_ImplDX11_RenderState* rend
         }
     }
 
+    if (sArcadeKartHudCompositeSamplerState == nullptr) {
+        D3D11_SAMPLER_DESC samplerDesc = {};
+        samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+        samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+        samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+        samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        samplerDesc.MinLOD = 0.0f;
+        samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+
+        if (renderState->Device->CreateSamplerState(&samplerDesc, &sArcadeKartHudCompositeSamplerState) != S_OK) {
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -452,6 +474,7 @@ static void ArcadeKartSetHudCompositeShader(const ImDrawList*, const ImDrawCmd*)
 
     const float blendFactor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
     renderState->DeviceContext->PSSetShader(sArcadeKartHudCompositePixelShader, nullptr, 0);
+    renderState->DeviceContext->PSSetSamplers(0, 1, &sArcadeKartHudCompositeSamplerState);
     renderState->DeviceContext->OMSetBlendState(sArcadeKartHudCompositeBlendState, blendFactor, 0xFFFFFFFF);
 }
 
