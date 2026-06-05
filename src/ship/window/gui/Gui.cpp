@@ -209,10 +209,14 @@ static void ArcadeKartDrawPostFxGame(ImTextureID textureId, const ImVec2& origin
     const float warpIntensity = std::clamp(cvars->GetFloat("gArcadeKart.PostFx.WarpIntensity", 1.0f), 0.0f, 3.0f);
     const float motionBlur = std::clamp(cvars->GetFloat("gArcadeKart.PostFx.MotionBlur", 0.28f), 0.0f, 1.0f);
     const float shakeStrength = std::clamp(cvars->GetFloat("gArcadeKart.PostFx.ShakeStrength", 0.018f), 0.0f, 0.1f);
+    const float shakeOutputScale =
+        std::clamp(cvars->GetFloat("gArcadeKart.PostFx.ShakeOutputScale", 0.3f), 0.0f, 2.0f);
     const float speedMinRatio = std::clamp(cvars->GetFloat("gArcadeKart.PostFx.SpeedMinRatio", 0.0f), 0.0f, 2.0f);
     const float speedMaxRatio = std::clamp(cvars->GetFloat("gArcadeKart.PostFx.SpeedMaxRatio", 1.0f), 0.0f, 2.0f);
     const float responsePower = std::clamp(cvars->GetFloat("gArcadeKart.PostFx.ResponsePower", 2.0f), 0.01f, 8.0f);
-    const bool tuningSlidersOnly = cvars->GetInteger("gArcadeKart.PostFx.TuningSlidersOnly", 1) != 0;
+    const float shakeResponsePower =
+        std::clamp(cvars->GetFloat("gArcadeKart.PostFx.ShakeResponsePower", 3.0f), 0.01f, 8.0f);
+    const bool tuningSlidersOnly = cvars->GetInteger("gArcadeKart.PostFx.TuningSlidersOnly", 0) != 0;
     const float testShakeSlider = ArcadeKartClamp01(cvars->GetFloat("gArcadeKart.PostFx.TestShakeSlider", 0.0f));
     const float testWarpSlider = ArcadeKartClamp01(cvars->GetFloat("gArcadeKart.PostFx.TestWarpSlider", 0.0f));
     const float tuningShakeInputMax =
@@ -248,30 +252,48 @@ static void ArcadeKartDrawPostFxGame(ImTextureID textureId, const ImVec2& origin
             manualOverride ? 0.0f
                            : ArcadeKartClamp01(ArcadeKartGetPlayerCVar("gArcadeKart.PostFx", view.playerIndex,
                                                                         "RoadRoughness", 0.0f));
+        const float fxScale =
+            manualOverride ? 1.0f
+                           : ArcadeKartClamp01(ArcadeKartGetPlayerCVar("gArcadeKart.PostFx", view.playerIndex,
+                                                                        "FxScale", 1.0f));
         const float normalizedSpeed = ArcadeKartNormalizeRange(speedRatio, speedMinRatio, speedMaxRatio);
         const float speedCurve = tuningSlidersOnly ? 0.0f : ArcadeKartApplyPostFxCurve(normalizedSpeed, responsePower);
         const float boostCurve = tuningSlidersOnly ? 0.0f : ArcadeKartApplyPostFxCurve(boostAmount, responsePower);
         const float roughnessCurve =
-            tuningSlidersOnly ? 0.0f : ArcadeKartApplyPostFxCurve(std::max(normalizedSpeed, roadRoughness), responsePower);
+            tuningSlidersOnly ? 0.0f : ArcadeKartApplyPostFxCurve(std::max(normalizedSpeed, roadRoughness), shakeResponsePower);
         const float tunedShakeInput =
-            ArcadeKartApplyPostFxCurve(testShakeSlider, responsePower) * tuningShakeInputMax;
+            ArcadeKartApplyPostFxCurve(testShakeSlider, shakeResponsePower) * tuningShakeInputMax;
         const float tunedWarpInput = ArcadeKartApplyPostFxCurve(testWarpSlider, responsePower) * tuningWarpInputMax;
         const float intensity =
-            tuningSlidersOnly ? ArcadeKartClamp01(tunedWarpInput / tuningWarpInputMax)
-                              : ArcadeKartClamp01((speedCurve * 0.65f) + boostCurve);
+            (tuningSlidersOnly ? ArcadeKartClamp01(tunedWarpInput / tuningWarpInputMax)
+                               : ArcadeKartClamp01((speedCurve * 0.65f) + boostCurve)) *
+            fxScale;
         const float barrelStrength =
-            tuningSlidersOnly
-                ? (tunedWarpInput * tuningWarpStrength)
-                : ((baseBarrel + (speedBarrel * speedCurve) + (boostBarrel * boostCurve)) * warpIntensity);
+            (tuningSlidersOnly
+                 ? (tunedWarpInput * tuningWarpStrength)
+                 : ((baseBarrel + (speedBarrel * speedCurve) + (boostBarrel * boostCurve)) * warpIntensity)) *
+            fxScale;
         const float viewWidth = view.maxPos.x - view.minPos.x;
         const float viewHeight = view.maxPos.y - view.minPos.y;
-        const float shakeDriver = tuningSlidersOnly ? tunedShakeInput : std::max(roughnessCurve, shakeAmount);
+        const float shakeImpulseCurve =
+            tuningSlidersOnly ? 0.0f : ArcadeKartApplyPostFxCurve(shakeAmount, shakeResponsePower);
+        const float shakeDriver = tuningSlidersOnly ? tunedShakeInput : std::max(roughnessCurve, shakeImpulseCurve);
         const float shakePixels =
             tuningSlidersOnly
-                ? (std::min(viewWidth, viewHeight) * shakeDriver * tuningShakeStrength)
-                : (std::min(viewWidth, viewHeight) * shakeStrength * shakeDriver);
-        const float shakeX = static_cast<float>(std::sin((time * 83.0) + (view.playerIndex * 1.7))) * shakePixels;
-        const float shakeY = static_cast<float>(std::cos((time * 67.0) + (view.playerIndex * 2.3))) * shakePixels;
+                ? (std::min(viewWidth, viewHeight) * shakeDriver * tuningShakeStrength * fxScale)
+                : (std::min(viewWidth, viewHeight) * shakeStrength * shakeDriver * fxScale);
+        const float scaledShakePixels = shakePixels * shakeOutputScale;
+        const float shakeX =
+            static_cast<float>(std::sin((time * 83.0) + (view.playerIndex * 1.7))) * scaledShakePixels;
+        const float shakeY =
+            static_cast<float>(std::cos((time * 67.0) + (view.playerIndex * 2.3))) * scaledShakePixels;
+        if (view.playerIndex == 0) {
+            cvars->SetFloat("gArcadeKart.PostFx.DebugActiveBarrel", barrelStrength);
+            cvars->SetFloat("gArcadeKart.PostFx.DebugActiveIntensity", intensity);
+            cvars->SetFloat("gArcadeKart.PostFx.DebugActiveShakePixels", scaledShakePixels);
+            cvars->SetFloat("gArcadeKart.PostFx.DebugSpeedCurve", speedCurve);
+            cvars->SetFloat("gArcadeKart.PostFx.DebugRoughnessCurve", roughnessCurve);
+        }
 #if defined(ENABLE_DX11) || defined(ENABLE_DX12)
         if (ArcadeKartShouldUseDx11PostFxShader()) {
             ArcadeKartScenePostFxShaderConstants constants = {};
@@ -583,6 +605,7 @@ static bool ArcadeKartDrawLayeredPostFxGame(const ImVec2& origin, const ImVec2& 
 
     ArcadeKartDrawPostFxGame(reinterpret_cast<ImTextureID>(sceneFramebuffer), origin, size);
     ArcadeKartDrawHudLayer(reinterpret_cast<ImTextureID>(hudFramebuffer), origin, size);
+    cvars->SetInteger("gArcadeKart.PostFx.LayeredHudActive", 0);
     return true;
 }
 } // namespace
