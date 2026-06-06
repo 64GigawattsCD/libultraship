@@ -275,7 +275,7 @@ static void ArcadeKartDrawPostFxGame(ImTextureID textureId, const ImVec2& origin
         const float fxScale =
             manualOverride ? 1.0f
                            : ArcadeKartClamp01(ArcadeKartGetPlayerCVar("gArcadeKart.PostFx", view.playerIndex,
-                                                                        "FxScale", 1.0f));
+                                                                        "FxScale", 0.0f));
         const float normalizedSpeed = ArcadeKartNormalizeRange(speedRatio, speedMinRatio, speedMaxRatio);
         const float speedCurve = tuningSlidersOnly ? 0.0f : ArcadeKartApplyPostFxCurve(normalizedSpeed, responsePower);
         const float boostCurve = tuningSlidersOnly ? 0.0f : ArcadeKartApplyPostFxCurve(boostAmount, responsePower);
