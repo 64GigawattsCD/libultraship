@@ -6,8 +6,10 @@
 #include "ship/config/ConsoleVariable.h"
 #if __APPLE__
 #include <SDL_events.h>
+#include <SDL_gamecontroller.h>
 #else
 #include <SDL2/SDL_events.h>
+#include <SDL2/SDL_gamecontroller.h>
 #endif
 #include <spdlog/spdlog.h>
 #include "ship/utils/StringHelper.h"
@@ -32,6 +34,7 @@
 #define KART_USE_ITEM_BACKWARD_BUTTON 0x04000000
 #define KART_TOGGLE_MUSIC_BUTTON 0x08000000
 #define KART_TOGGLE_HUD_BUTTON 0x40000000
+#define KART_CAPTURE_SCREENSHOT_BUTTON 0x80000000
 #define KART_DRIFT_BUTTON_VALUE_INDEX 4
 #define WHEEL_STICK_RANGE 85.0f
 #define WHEEL_HANDBRAKE_THRESHOLD 0.25f
@@ -61,6 +64,23 @@ static float GetNormalizedTriggerValue(uint8_t portIndex, SDL_GameControllerAxis
     }
 
     return triggerValue;
+}
+
+static bool IsSDLGamepadButtonPressed(uint8_t portIndex, SDL_GameControllerButton button) {
+    if (Ship::Context::GetInstance()->GetControlDeck()->GamepadGameInputBlocked()) {
+        return false;
+    }
+
+    for (const auto& [instanceId, gamepad] : Ship::Context::GetInstance()
+                                                ->GetControlDeck()
+                                                ->GetConnectedPhysicalDeviceManager()
+                                                ->GetConnectedSDLGamepadsForPort(portIndex)) {
+        if (SDL_GameControllerGetButton(gamepad, button)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static void ApplyWheelReading(OSContPad& pad, const WheelReading& reading) {
@@ -166,6 +186,9 @@ void Controller::ReadToOSContPad(OSContPad* pad) {
     // Button Inputs
     for (auto [bitmask, button] : mButtons) {
         button->UpdatePad(padToBuffer.button, padToBuffer.button_value);
+    }
+    if (IsSDLGamepadButtonPressed(GetPortIndex(), SDL_CONTROLLER_BUTTON_BACK)) {
+        padToBuffer.button |= KART_CAPTURE_SCREENSHOT_BUTTON;
     }
 
     // Stick Inputs
