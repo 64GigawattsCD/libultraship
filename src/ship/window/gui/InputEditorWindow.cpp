@@ -1256,7 +1256,7 @@ void InputEditorWindow::DrawPortTab(uint8_t portIndex) {
             DrawButtonLine("Ceremony Debug Select Luigi", portIndex, BTN_CUP, CHIP_COLOR_N64_YELLOW);
             DrawButtonLine("Ceremony Debug Select DK", portIndex, BTN_CDOWN, CHIP_COLOR_N64_YELLOW);
             DrawButtonLine("Look Behind", portIndex, BTN_CLEFT, CHIP_COLOR_N64_YELLOW);
-            DrawButtonLine("Toggle HUD", portIndex, BTN_CRIGHT, CHIP_COLOR_N64_YELLOW);
+            DrawButtonLine("First Person View", portIndex, BTN_CRIGHT, CHIP_COLOR_N64_YELLOW);
         }
 
         if (ImGui::CollapsingHeader("D-Pad", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {
