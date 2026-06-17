@@ -78,7 +78,9 @@ class WheelDevice {
 
     bool Matches(int32_t deviceIndex) const;
     bool IsOpen() const;
+    bool HasStaleHandle() const;
     bool Open(int32_t deviceIndex);
+    void Close();
     WheelReading Read();
     void UpdateForceFeedback(const WheelForceFeedbackState& state);
 

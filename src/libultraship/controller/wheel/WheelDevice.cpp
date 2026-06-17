@@ -590,11 +590,19 @@ bool WheelDevice::Matches(int32_t deviceIndex) const {
     bool nameMatches = deviceName != nullptr && std::string(deviceName).find(mDefinition.name) != std::string::npos;
     bool vidPidMatches = SDL_JoystickGetDeviceVendor(deviceIndex) == mDefinition.vendorId &&
                          SDL_JoystickGetDeviceProduct(deviceIndex) == mDefinition.productId;
-    return nameMatches || vidPidMatches;
+    if (mDefinition.vendorId != 0 || mDefinition.productId != 0) {
+        return vidPidMatches;
+    }
+
+    return nameMatches;
 }
 
 bool WheelDevice::IsOpen() const {
-    return mJoystick != nullptr;
+    return mJoystick != nullptr && SDL_JoystickGetAttached(mJoystick) == SDL_TRUE;
+}
+
+bool WheelDevice::HasStaleHandle() const {
+    return mJoystick != nullptr && SDL_JoystickGetAttached(mJoystick) != SDL_TRUE;
 }
 
 bool WheelDevice::Open(int32_t deviceIndex) {
@@ -602,6 +610,7 @@ bool WheelDevice::Open(int32_t deviceIndex) {
         return true;
     }
 
+    Close();
     mJoystick = SDL_JoystickOpen(deviceIndex);
     InitializeHaptics();
     InitializeLogitechSdkSpring();
@@ -609,6 +618,30 @@ bool WheelDevice::Open(int32_t deviceIndex) {
                 IsOpen() ? SDL_JoystickNumAxes(mJoystick) : 0, IsOpen() ? SDL_JoystickNumButtons(mJoystick) : 0,
                 IsOpen() ? SDL_JoystickNumHats(mJoystick) : 0, mHaptic != nullptr);
     return IsOpen();
+}
+
+void WheelDevice::Close() {
+    if (mHaptic != nullptr) {
+        SDL_HapticClose(mHaptic);
+        mHaptic = nullptr;
+    }
+    if (mJoystick != nullptr) {
+        SPDLOG_INFO("Wheel device '{}' closed.", mDefinition.name);
+        SDL_JoystickClose(mJoystick);
+        mJoystick = nullptr;
+    }
+
+    mSteeringWeightEffectId = -1;
+    mCenteringForceEffectId = -1;
+    mPeriodicEffectId = -1;
+    mTerrainKickEffectId = -1;
+    mSlopeForceEffectId = -1;
+    mCoarseTerrainKickEffectId = -1;
+    mSupportsSteeringWeight = false;
+    mSupportsConstantForce = false;
+    mSupportsPeriodic = false;
+    mSupportsRumble = false;
+    mLogitechSdkSpringActive = false;
 }
 
 void WheelDevice::InitializeHaptics() {
@@ -1324,7 +1357,15 @@ WheelDeviceManager::WheelDeviceManager()
 
 void WheelDeviceManager::RefreshDevices() {
     int32_t joystickCount = SDL_NumJoysticks();
-    if (joystickCount == mLastJoystickCount) {
+    bool hasStaleHandle = false;
+    for (auto& device : mDevices) {
+        if (device.HasStaleHandle()) {
+            device.Close();
+            hasStaleHandle = true;
+        }
+    }
+
+    if (joystickCount == mLastJoystickCount && !hasStaleHandle) {
         return;
     }
 
