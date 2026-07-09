@@ -30,5 +30,15 @@ void SDLAddRemoveDeviceEventHandler::UpdateElement() {
         Context::GetInstance()->GetControlDeck()->GetConnectedPhysicalDeviceManager()->HandlePhysicalDeviceDisconnect(
             event.cdevice.which);
     }
+
+    while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_JOYDEVICEADDED, SDL_JOYDEVICEADDED) > 0) {
+        Context::GetInstance()->GetControlDeck()->GetConnectedPhysicalDeviceManager()->HandlePhysicalDeviceConnect(
+            event.jdevice.which);
+    }
+
+    while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_JOYDEVICEREMOVED, SDL_JOYDEVICEREMOVED) > 0) {
+        Context::GetInstance()->GetControlDeck()->GetConnectedPhysicalDeviceManager()->HandlePhysicalDeviceDisconnect(
+            event.jdevice.which);
+    }
 }
 } // namespace Ship

@@ -13,6 +13,81 @@
 #include "controller/controldeck/ControlDeck.h"
 
 namespace Ship {
+namespace {
+
+bool HasSideWinderDefaults(uint8_t portIndex) {
+    return Context::GetInstance()
+        ->GetControlDeck()
+        ->GetConnectedPhysicalDeviceManager()
+        ->HasConnectedSideWinderForceFeedback2ForPort(portIndex);
+}
+
+std::vector<std::shared_ptr<ControllerButtonMapping>>
+CreateSideWinderButtonMappings(uint8_t portIndex, CONTROLLERBUTTONS_T bitmask) {
+    std::vector<std::shared_ptr<ControllerButtonMapping>> mappings;
+
+    switch (bitmask) {
+        case BTN_A:
+            mappings.push_back(std::make_shared<SDLButtonToButtonMapping>(portIndex, bitmask, SDL_CONTROLLER_BUTTON_A));
+            break;
+        case BTN_B:
+            mappings.push_back(std::make_shared<SDLButtonToButtonMapping>(portIndex, bitmask, SDL_CONTROLLER_BUTTON_X));
+            break;
+        case BTN_R:
+            mappings.push_back(
+                std::make_shared<SDLButtonToButtonMapping>(portIndex, bitmask, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER));
+            break;
+        case BTN_Z:
+            mappings.push_back(
+                std::make_shared<SDLButtonToButtonMapping>(portIndex, bitmask, SDL_CONTROLLER_BUTTON_LEFTSHOULDER));
+            break;
+        case BTN_START:
+            mappings.push_back(
+                std::make_shared<SDLButtonToButtonMapping>(portIndex, bitmask, SDL_CONTROLLER_BUTTON_START));
+            break;
+        case BTN_CUP:
+            mappings.push_back(std::make_shared<SDLAxisDirectionToButtonMapping>(
+                portIndex, bitmask, SDL_CONTROLLER_AXIS_RIGHTY, NEGATIVE));
+            break;
+        case BTN_CDOWN:
+            mappings.push_back(std::make_shared<SDLButtonToButtonMapping>(portIndex, bitmask, SDL_CONTROLLER_BUTTON_B));
+            mappings.push_back(std::make_shared<SDLAxisDirectionToButtonMapping>(
+                portIndex, bitmask, SDL_CONTROLLER_AXIS_TRIGGERLEFT, POSITIVE));
+            break;
+        case BTN_CLEFT:
+            mappings.push_back(std::make_shared<SDLButtonToButtonMapping>(portIndex, bitmask, SDL_CONTROLLER_BUTTON_Y));
+            mappings.push_back(std::make_shared<SDLAxisDirectionToButtonMapping>(
+                portIndex, bitmask, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, POSITIVE));
+            break;
+        case BTN_CRIGHT:
+            mappings.push_back(std::make_shared<SDLAxisDirectionToButtonMapping>(
+                portIndex, bitmask, SDL_CONTROLLER_AXIS_RIGHTX, POSITIVE));
+            break;
+        case BTN_DUP:
+            mappings.push_back(
+                std::make_shared<SDLButtonToButtonMapping>(portIndex, bitmask, SDL_CONTROLLER_BUTTON_DPAD_UP));
+            break;
+        case BTN_DDOWN:
+            mappings.push_back(
+                std::make_shared<SDLButtonToButtonMapping>(portIndex, bitmask, SDL_CONTROLLER_BUTTON_DPAD_DOWN));
+            break;
+        case BTN_DLEFT:
+            mappings.push_back(
+                std::make_shared<SDLButtonToButtonMapping>(portIndex, bitmask, SDL_CONTROLLER_BUTTON_DPAD_LEFT));
+            break;
+        case BTN_DRIGHT:
+            mappings.push_back(
+                std::make_shared<SDLButtonToButtonMapping>(portIndex, bitmask, SDL_CONTROLLER_BUTTON_DPAD_RIGHT));
+            break;
+        default:
+            break;
+    }
+
+    return mappings;
+}
+
+} // namespace
+
 std::shared_ptr<ControllerButtonMapping> ButtonMappingFactory::CreateButtonMappingFromConfig(uint8_t portIndex,
                                                                                              std::string id) {
     const std::string mappingCvarKey = CVAR_PREFIX_CONTROLLERS ".ButtonMappings." + id;
@@ -100,6 +175,13 @@ ButtonMappingFactory::CreateDefaultKeyboardButtonMappings(uint8_t portIndex, CON
 std::vector<std::shared_ptr<ControllerButtonMapping>>
 ButtonMappingFactory::CreateDefaultSDLButtonMappings(uint8_t portIndex, CONTROLLERBUTTONS_T bitmask) {
     std::vector<std::shared_ptr<ControllerButtonMapping>> mappings;
+
+    if (HasSideWinderDefaults(portIndex)) {
+        mappings = CreateSideWinderButtonMappings(portIndex, bitmask);
+        if (!mappings.empty()) {
+            return mappings;
+        }
+    }
 
     auto defaultButtonsForBitmask = Context::GetInstance()
                                         ->GetControlDeck()

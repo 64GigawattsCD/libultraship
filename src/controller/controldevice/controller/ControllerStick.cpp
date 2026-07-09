@@ -31,7 +31,7 @@ ControllerStick::ControllerStick(uint8_t portIndex, StickIndex stickIndex)
     mSensitivityPercentage = DEFAULT_STICK_SENSITIVITY_PERCENTAGE;
     mSensitivity = 1.0f;
     mDeadzonePercentage = DEFAULT_STICK_DEADZONE_PERCENTAGE;
-    mDeadzone = 17.0f;
+    mDeadzone = MAX_AXIS_RANGE * (DEFAULT_STICK_DEADZONE_PERCENTAGE / 100.0f);
     mNotchSnapAngle = 0;
 }
 
@@ -46,7 +46,7 @@ void ControllerStick::ClearAllMappings() {
     }
     mAxisDirectionMappings.clear();
     SaveAxisDirectionMappingIdsToConfig();
-    SetDeadzone(20);
+    ResetDeadzoneToDefault();
     SetNotchSnapAngle(0);
 }
 

@@ -14,7 +14,9 @@ class ConnectedPhysicalDeviceManager {
     ~ConnectedPhysicalDeviceManager();
 
     std::unordered_map<int32_t, SDL_GameController*> GetConnectedSDLGamepadsForPort(uint8_t portIndex);
+    std::unordered_map<int32_t, SDL_Haptic*> GetConnectedSDLHapticsForPort(uint8_t portIndex);
     std::unordered_map<int32_t, std::string> GetConnectedSDLGamepadNames();
+    bool HasConnectedSideWinderForceFeedback2ForPort(uint8_t portIndex);
     std::unordered_set<int32_t> GetIgnoredInstanceIdsForPort(uint8_t portIndex);
     bool PortIsIgnoringInstanceId(uint8_t portIndex, int32_t instanceId);
     void IgnoreInstanceIdForPort(uint8_t portIndex, int32_t instanceId);
@@ -26,7 +28,10 @@ class ConnectedPhysicalDeviceManager {
 
   private:
     std::unordered_map<int32_t, SDL_GameController*> mConnectedSDLGamepads;
+    std::unordered_map<int32_t, SDL_Joystick*> mConnectedSDLHapticJoysticks;
+    std::unordered_map<int32_t, SDL_Haptic*> mConnectedSDLHaptics;
     std::unordered_map<int32_t, std::string> mConnectedSDLGamepadNames;
+    std::unordered_map<int32_t, std::string> mConnectedSDLHapticNames;
     std::unordered_map<uint8_t, std::unordered_set<int32_t>> mIgnoredInstanceIds;
 };
 } // namespace Ship

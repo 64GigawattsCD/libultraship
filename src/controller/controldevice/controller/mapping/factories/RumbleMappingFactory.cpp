@@ -1,4 +1,5 @@
 #include "RumbleMappingFactory.h"
+#include "controller/controldevice/controller/mapping/sdl/SDLHapticRumbleMapping.h"
 #include "controller/controldevice/controller/mapping/sdl/SDLRumbleMapping.h"
 #include "public/bridge/consolevariablebridge.h"
 #include "utils/StringHelper.h"
@@ -30,14 +31,22 @@ std::shared_ptr<ControllerRumbleMapping> RumbleMappingFactory::CreateRumbleMappi
         return std::make_shared<SDLRumbleMapping>(portIndex, lowFrequencyIntensityPercentage,
                                                   highFrequencyIntensityPercentage);
     }
+    if (mappingClass == "SDLHapticRumbleMapping") {
+        return std::make_shared<SDLHapticRumbleMapping>(portIndex, lowFrequencyIntensityPercentage,
+                                                        highFrequencyIntensityPercentage);
+    }
 
     return nullptr;
 }
 
 std::vector<std::shared_ptr<ControllerRumbleMapping>>
 RumbleMappingFactory::CreateDefaultSDLRumbleMappings(PhysicalDeviceType physicalDeviceType, uint8_t portIndex) {
-    std::vector<std::shared_ptr<ControllerRumbleMapping>> mappings = { std::make_shared<SDLRumbleMapping>(
-        portIndex, DEFAULT_LOW_FREQUENCY_RUMBLE_PERCENTAGE, DEFAULT_HIGH_FREQUENCY_RUMBLE_PERCENTAGE) };
+    std::vector<std::shared_ptr<ControllerRumbleMapping>> mappings = {
+        std::make_shared<SDLRumbleMapping>(portIndex, DEFAULT_LOW_FREQUENCY_RUMBLE_PERCENTAGE,
+                                           DEFAULT_HIGH_FREQUENCY_RUMBLE_PERCENTAGE),
+        std::make_shared<SDLHapticRumbleMapping>(portIndex, DEFAULT_LOW_FREQUENCY_RUMBLE_PERCENTAGE,
+                                                 DEFAULT_HIGH_FREQUENCY_RUMBLE_PERCENTAGE),
+    };
 
     return mappings;
 }
@@ -82,6 +91,15 @@ std::shared_ptr<ControllerRumbleMapping> RumbleMappingFactory::CreateRumbleMappi
                                                          DEFAULT_HIGH_FREQUENCY_RUMBLE_PERCENTAGE);
             break;
         }
+    }
+
+    if (!Context::GetInstance()
+             ->GetControlDeck()
+             ->GetConnectedPhysicalDeviceManager()
+             ->GetConnectedSDLHapticsForPort(portIndex)
+             .empty()) {
+        mapping = std::make_shared<SDLHapticRumbleMapping>(portIndex, DEFAULT_LOW_FREQUENCY_RUMBLE_PERCENTAGE,
+                                                           DEFAULT_HIGH_FREQUENCY_RUMBLE_PERCENTAGE);
     }
 
     return mapping;

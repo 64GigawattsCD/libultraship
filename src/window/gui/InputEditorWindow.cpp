@@ -3,6 +3,7 @@
 #include "Gui.h"
 #include "utils/StringHelper.h"
 #include "public/bridge/consolevariablebridge.h"
+#include "public/bridge/controllerbridge.h"
 #include "controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToButtonMapping.h"
 #include "controller/controldeck/ControlDeck.h"
 
@@ -960,6 +961,51 @@ void InputEditorWindow::DrawRumbleSection(uint8_t port) {
     ImGui::AlignTextToFramePadding();
     ImGui::BulletText("Add rumble device");
     DrawAddRumbleMappingButton(port);
+
+    ImGui::Separator();
+    ImGui::Text("Force Feedback 2");
+    ImGui::Text("Compatible device: %s", ControllerHasForceFeedback(port) ? "Detected" : "Not detected");
+
+    bool enabled = CVarGetInteger("gSidewinderFFB.Enabled", 1) != 0;
+    if (ImGui::Checkbox(StringHelper::Sprintf("Enabled##SidewinderFFBEnabled%d", port).c_str(), &enabled)) {
+        CVarSetInteger("gSidewinderFFB.Enabled", enabled);
+        CVarSave();
+    }
+
+    bool recoil = CVarGetInteger("gSidewinderFFB.Recoil", 1) != 0;
+    if (ImGui::Checkbox(StringHelper::Sprintf("Weapon recoil##SidewinderFFBRecoil%d", port).c_str(), &recoil)) {
+        CVarSetInteger("gSidewinderFFB.Recoil", recoil);
+        CVarSave();
+    }
+
+    bool damage = CVarGetInteger("gSidewinderFFB.Damage", 1) != 0;
+    if (ImGui::Checkbox(StringHelper::Sprintf("Damage effects##SidewinderFFBDamage%d", port).c_str(), &damage)) {
+        CVarSetInteger("gSidewinderFFB.Damage", damage);
+        CVarSave();
+    }
+
+    bool flightModel = CVarGetInteger("gSidewinderFFB.FlightModel", 1) != 0;
+    if (ImGui::Checkbox(StringHelper::Sprintf("Flight model##SidewinderFFBFlightModel%d", port).c_str(),
+                        &flightModel)) {
+        CVarSetInteger("gSidewinderFFB.FlightModel", flightModel);
+        CVarSave();
+    }
+
+    int32_t springStrength = CVarGetInteger("gSidewinderFFB.SpringStrength", 15000);
+    ImGui::SetNextItemWidth(SCALE_IMGUI_SIZE(220.0f));
+    if (ImGui::SliderInt(StringHelper::Sprintf("Spring##SidewinderFFBSpring%d", port).c_str(), &springStrength, 0,
+                         INT16_MAX, "%d", ImGuiSliderFlags_AlwaysClamp)) {
+        CVarSetInteger("gSidewinderFFB.SpringStrength", springStrength);
+        CVarSave();
+    }
+
+    int32_t damperStrength = CVarGetInteger("gSidewinderFFB.DamperStrength", 9000);
+    ImGui::SetNextItemWidth(SCALE_IMGUI_SIZE(220.0f));
+    if (ImGui::SliderInt(StringHelper::Sprintf("Damper##SidewinderFFBDamper%d", port).c_str(), &damperStrength, 0,
+                         INT16_MAX, "%d", ImGuiSliderFlags_AlwaysClamp)) {
+        CVarSetInteger("gSidewinderFFB.DamperStrength", damperStrength);
+        CVarSave();
+    }
 }
 
 void InputEditorWindow::DrawRemoveLEDMappingButton(uint8_t port, std::string id) {

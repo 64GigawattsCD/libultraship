@@ -16,6 +16,46 @@
 #include "controller/controldeck/ControlDeck.h"
 
 namespace Ship {
+namespace {
+
+bool HasSideWinderDefaults(uint8_t portIndex) {
+    return Context::GetInstance()
+        ->GetControlDeck()
+        ->GetConnectedPhysicalDeviceManager()
+        ->HasConnectedSideWinderForceFeedback2ForPort(portIndex);
+}
+
+std::vector<std::shared_ptr<ControllerAxisDirectionMapping>>
+CreateSideWinderAxisDirectionMappings(uint8_t portIndex, StickIndex stickIndex) {
+    std::vector<std::shared_ptr<ControllerAxisDirectionMapping>> mappings;
+
+    if (stickIndex == LEFT_STICK) {
+        mappings.push_back(std::make_shared<SDLAxisDirectionToAxisDirectionMapping>(
+            portIndex, stickIndex, LEFT, SDL_CONTROLLER_AXIS_LEFTX, NEGATIVE));
+        mappings.push_back(std::make_shared<SDLAxisDirectionToAxisDirectionMapping>(
+            portIndex, stickIndex, RIGHT, SDL_CONTROLLER_AXIS_LEFTX, POSITIVE));
+        mappings.push_back(std::make_shared<SDLAxisDirectionToAxisDirectionMapping>(
+            portIndex, stickIndex, UP, SDL_CONTROLLER_AXIS_LEFTY, NEGATIVE));
+        mappings.push_back(std::make_shared<SDLAxisDirectionToAxisDirectionMapping>(
+            portIndex, stickIndex, DOWN, SDL_CONTROLLER_AXIS_LEFTY, POSITIVE));
+    }
+
+    if (stickIndex == RIGHT_STICK) {
+        mappings.push_back(std::make_shared<SDLAxisDirectionToAxisDirectionMapping>(
+            portIndex, stickIndex, LEFT, SDL_CONTROLLER_AXIS_RIGHTX, NEGATIVE));
+        mappings.push_back(std::make_shared<SDLAxisDirectionToAxisDirectionMapping>(
+            portIndex, stickIndex, RIGHT, SDL_CONTROLLER_AXIS_RIGHTX, POSITIVE));
+        mappings.push_back(std::make_shared<SDLAxisDirectionToAxisDirectionMapping>(
+            portIndex, stickIndex, UP, SDL_CONTROLLER_AXIS_RIGHTY, NEGATIVE));
+        mappings.push_back(std::make_shared<SDLAxisDirectionToAxisDirectionMapping>(
+            portIndex, stickIndex, DOWN, SDL_CONTROLLER_AXIS_RIGHTY, POSITIVE));
+    }
+
+    return mappings;
+}
+
+} // namespace
+
 std::shared_ptr<ControllerAxisDirectionMapping>
 AxisDirectionMappingFactory::CreateAxisDirectionMappingFromConfig(uint8_t portIndex, StickIndex stickIndex,
                                                                   std::string id) {
@@ -129,6 +169,13 @@ AxisDirectionMappingFactory::CreateDefaultKeyboardAxisDirectionMappings(uint8_t 
 std::vector<std::shared_ptr<ControllerAxisDirectionMapping>>
 AxisDirectionMappingFactory::CreateDefaultSDLAxisDirectionMappings(uint8_t portIndex, StickIndex stickIndex) {
     std::vector<std::shared_ptr<ControllerAxisDirectionMapping>> mappings;
+
+    if (HasSideWinderDefaults(portIndex)) {
+        mappings = CreateSideWinderAxisDirectionMappings(portIndex, stickIndex);
+        if (!mappings.empty()) {
+            return mappings;
+        }
+    }
 
     auto defaultButtonsForStick = Context::GetInstance()
                                       ->GetControlDeck()
