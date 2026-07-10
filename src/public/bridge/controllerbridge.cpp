@@ -64,6 +64,21 @@ SDL_HapticEffect BuildConditionEffect(uint16_t type, uint16_t strength) {
     return effect;
 }
 
+SDL_HapticEffect BuildPeriodicEffect(uint16_t type, float directionX, float directionY, uint16_t strength,
+                                     uint16_t periodMs, uint16_t lengthMs, uint16_t fadeMs) {
+    SDL_HapticEffect effect;
+    memset(&effect, 0, sizeof(effect));
+    effect.type = type;
+    effect.periodic.type = type;
+    SetDirection(effect.periodic.direction, directionX, directionY);
+    effect.periodic.length = lengthMs;
+    effect.periodic.period = std::max<uint16_t>(periodMs, 10);
+    effect.periodic.magnitude = ClampStrength(strength);
+    effect.periodic.attack_length = std::min<uint16_t>(lengthMs / 6, 15);
+    effect.periodic.fade_length = std::min<uint16_t>(fadeMs, lengthMs);
+    return effect;
+}
+
 void DestroyPersistentEffect(SDL_Haptic* haptic, int32_t& effectId) {
     if (effectId < 0) {
         return;
@@ -117,6 +132,12 @@ uint8_t ControllerHasForceFeedback(uint8_t port) {
 }
 
 void ControllerFFBPlayConstant(uint8_t port, float directionX, float directionY, uint16_t strength, uint16_t lengthMs) {
+    ControllerFFBPlayConstantWithEnvelope(port, directionX, directionY, strength, lengthMs,
+                                          std::min<uint16_t>(lengthMs / 5, 20), std::min<uint16_t>(lengthMs / 2, 80));
+}
+
+void ControllerFFBPlayConstantWithEnvelope(uint8_t port, float directionX, float directionY, uint16_t strength,
+                                           uint16_t lengthMs, uint16_t attackMs, uint16_t fadeMs) {
     for (const auto& [instanceId, haptic] : Ship::Context::GetInstance()
                                              ->GetControlDeck()
                                              ->GetConnectedPhysicalDeviceManager()
@@ -132,8 +153,8 @@ void ControllerFFBPlayConstant(uint8_t port, float directionX, float directionY,
         SetDirection(effect.constant.direction, directionX, directionY);
         effect.constant.length = lengthMs;
         effect.constant.level = static_cast<Sint16>(ClampStrength(strength));
-        effect.constant.attack_length = std::min<uint16_t>(lengthMs / 5, 20);
-        effect.constant.fade_length = std::min<uint16_t>(lengthMs / 2, 80);
+        effect.constant.attack_length = std::min<uint16_t>(attackMs, lengthMs);
+        effect.constant.fade_length = std::min<uint16_t>(fadeMs, lengthMs);
 
         auto effectId = SDL_HapticNewEffect(haptic, &effect);
         if (effectId >= 0) {
@@ -145,6 +166,12 @@ void ControllerFFBPlayConstant(uint8_t port, float directionX, float directionY,
 
 void ControllerFFBPlayPeriodic(uint8_t port, float directionX, float directionY, uint16_t strength, uint16_t periodMs,
                                uint16_t lengthMs) {
+    ControllerFFBPlayPeriodicWithFade(port, directionX, directionY, strength, periodMs, lengthMs,
+                                      std::min<uint16_t>(lengthMs / 2, 90));
+}
+
+void ControllerFFBPlayPeriodicWithFade(uint8_t port, float directionX, float directionY, uint16_t strength,
+                                       uint16_t periodMs, uint16_t lengthMs, uint16_t fadeMs) {
     for (const auto& [instanceId, haptic] : Ship::Context::GetInstance()
                                              ->GetControlDeck()
                                              ->GetConnectedPhysicalDeviceManager()
@@ -153,16 +180,7 @@ void ControllerFFBPlayPeriodic(uint8_t port, float directionX, float directionY,
             continue;
         }
 
-        SDL_HapticEffect effect;
-        memset(&effect, 0, sizeof(effect));
-        effect.type = SDL_HAPTIC_SINE;
-        effect.periodic.type = SDL_HAPTIC_SINE;
-        SetDirection(effect.periodic.direction, directionX, directionY);
-        effect.periodic.length = lengthMs;
-        effect.periodic.period = std::max<uint16_t>(periodMs, 10);
-        effect.periodic.magnitude = ClampStrength(strength);
-        effect.periodic.attack_length = std::min<uint16_t>(lengthMs / 6, 15);
-        effect.periodic.fade_length = std::min<uint16_t>(lengthMs / 2, 90);
+        auto effect = BuildPeriodicEffect(SDL_HAPTIC_SINE, directionX, directionY, strength, periodMs, lengthMs, fadeMs);
 
         auto effectId = SDL_HapticNewEffect(haptic, &effect);
         if (effectId >= 0) {

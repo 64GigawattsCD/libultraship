@@ -991,6 +991,21 @@ void InputEditorWindow::DrawRumbleSection(uint8_t port) {
         CVarSave();
     }
 
+    bool headingPID = CVarGetInteger("gSidewinderFFB.HeadingPID", 1) != 0;
+    if (ImGui::Checkbox(StringHelper::Sprintf("Heading follow##SidewinderFFBHeadingPID%d", port).c_str(),
+                        &headingPID)) {
+        CVarSetInteger("gSidewinderFFB.HeadingPID", headingPID);
+        CVarSave();
+    }
+
+    int32_t headingPIDStrength = CVarGetInteger("gSidewinderFFB.HeadingPIDStrength", 17000);
+    ImGui::SetNextItemWidth(SCALE_IMGUI_SIZE(220.0f));
+    if (ImGui::SliderInt(StringHelper::Sprintf("Heading force##SidewinderFFBHeadingPIDStrength%d", port).c_str(),
+                         &headingPIDStrength, 0, INT16_MAX, "%d", ImGuiSliderFlags_AlwaysClamp)) {
+        CVarSetInteger("gSidewinderFFB.HeadingPIDStrength", headingPIDStrength);
+        CVarSave();
+    }
+
     int32_t springStrength = CVarGetInteger("gSidewinderFFB.SpringStrength", 15000);
     ImGui::SetNextItemWidth(SCALE_IMGUI_SIZE(220.0f));
     if (ImGui::SliderInt(StringHelper::Sprintf("Spring##SidewinderFFBSpring%d", port).c_str(), &springStrength, 0,
