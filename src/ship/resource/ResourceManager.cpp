@@ -26,6 +26,11 @@ ResourceIdentifier::ResourceIdentifier(const std::string& path, const uintptr_t 
     mHash = CalculateHash();
 }
 
+ResourceIdentifier::ResourceIdentifier(std::string&& path, const uintptr_t owner, const std::shared_ptr<Archive> parent)
+    : Path(std::move(path)), Owner(owner), Parent(parent) {
+    mHash = CalculateHash();
+}
+
 bool ResourceIdentifier::operator==(const ResourceIdentifier& rhs) const {
     return Owner == rhs.Owner && Path == rhs.Path && Parent == rhs.Parent;
 }
@@ -108,8 +113,10 @@ std::shared_ptr<IResource> ResourceManager::LoadResourceProcess(const ResourceId
     // Attempt to load the alternate version of the asset, if we fail then we continue trying to load the standard
     // asset.
     if (shouldCheckAlt) {
-        const auto altPath = IResource::gAltAssetPrefix + identifier.Path;
-        auto altResource = LoadResourceProcess({ altPath, identifier.Owner, identifier.Parent }, loadExact, initData);
+        std::string altPath = IResource::gAltAssetPrefix;
+        altPath += identifier.Path;
+        auto altResource =
+            LoadResourceProcess({ std::move(altPath), identifier.Owner, identifier.Parent }, loadExact, initData);
 
         if (altResource != nullptr) {
             return altResource;
@@ -118,22 +125,26 @@ std::shared_ptr<IResource> ResourceManager::LoadResourceProcess(const ResourceId
 
     // While waiting in the queue, another thread could have loaded the resource.
     // In a last attempt to avoid doing work that will be discarded, let's check if the cached version exists.
-    auto cacheLine = CheckCache(identifier);
-    if (cacheLine != nullptr) {
-        auto cachedResource = GetCachedResource(*cacheLine);
-        if (cachedResource != nullptr) {
-            return cachedResource;
-        }
+    auto cacheLine = CheckCache(identifier, loadExact);
+    auto cachedResource = GetCachedResource(cacheLine);
+    if (cachedResource != nullptr) {
+        return cachedResource;
+    }
 
-        // Check for resource load errors which can indicate an alternate asset.
-        // If we are attempting to load an alternate asset, we can return null
-        if (!loadExact && mAltAssetsEnabled && isAltPath) {
-            if (auto* loadError = std::get_if<ResourceLoadError>(cacheLine)) {
+    // Check for resource load errors which can indicate an alternate asset.
+    // If we are attempting to load an alternate asset, we can return null
+    if (!loadExact && mAltAssetsEnabled && isAltPath) {
+        if (std::holds_alternative<ResourceLoadError>(cacheLine)) {
+            try {
                 // If we have attempted to cache an alternate asset, but failed, we return nullptr and rely on the
                 // calling function to return a regular asset. If we have NOT attempted load already, attempt the load.
-                if (*loadError != ResourceLoadError::NotCached) {
+                auto loadError = std::get<ResourceLoadError>(cacheLine);
+                if (loadError != ResourceLoadError::NotCached) {
                     return nullptr;
                 }
+            } catch (std::bad_variant_access const& e) {
+                // This should never happen. The holds_alternative check above should prevent it.
+                SPDLOG_ERROR("Unexpected bad_variant_access in LoadResourceProcess: {}", e.what());
             }
         }
     }
@@ -142,7 +153,6 @@ std::shared_ptr<IResource> ResourceManager::LoadResourceProcess(const ResourceId
     auto file = LoadFileProcess(identifier.Path);
     if (file == nullptr) {
         SPDLOG_TRACE("Failed to load resource file at path {}", identifier.Path);
-        const std::lock_guard<std::mutex> lock(mMutex);
         mResourceCache[identifier] = ResourceLoadError::NotFound;
         return nullptr;
     }
@@ -151,19 +161,16 @@ std::shared_ptr<IResource> ResourceManager::LoadResourceProcess(const ResourceId
     auto resource = GetResourceLoader()->LoadResource(identifier.Path, file, initData);
 
     // Another thread could have loaded the resource while we were processing, so we want to check before setting to
-    // the cache. We do this under the same lock to avoid redundant lookups.
+    // the cache.
+    cachedResource = GetCachedResource(identifier, true);
+
     {
         const std::lock_guard<std::mutex> lock(mMutex);
 
-        // Check if another thread loaded this resource while we were processing
-        auto existingIt = mResourceCache.find(identifier);
-        if (existingIt != mResourceCache.end()) {
-            if (auto* cached = std::get_if<std::shared_ptr<IResource>>(&existingIt->second)) {
-                if (cached->use_count() > 0 && !(*cached)->IsDirty()) {
-                    // Another thread loaded it, use that instead
-                    return *cached;
-                }
-            }
+        if (cachedResource != nullptr) {
+            // If another thread has already loaded this resource, discard the work we already did and return from
+            // cache.
+            resource = cachedResource;
         }
 
         // Set the cache to the loaded resource
@@ -243,30 +250,37 @@ std::shared_ptr<IResource> ResourceManager::LoadResource(uint64_t crc, bool load
     return LoadResource(*hashStr, loadExact, initData);
 }
 
-const std::variant<ResourceManager::ResourceLoadError, std::shared_ptr<IResource>>*
-ResourceManager::CheckCache(const ResourceIdentifier& identifier) {
+std::variant<ResourceManager::ResourceLoadError, std::shared_ptr<IResource>>
+ResourceManager::CheckCache(const ResourceIdentifier& identifier, bool loadExact) {
+    if (!loadExact && mAltAssetsEnabled && !identifier.Path.starts_with(IResource::gAltAssetPrefix)) {
+        const auto altPath = IResource::gAltAssetPrefix + identifier.Path;
+        auto altCacheResult = CheckCache({ altPath, identifier.Owner, identifier.Parent }, loadExact);
+
+        // If the type held at this cache index is a resource, then we return it.
+        // Else we attempt to load standard definition assets.
+        if (std::holds_alternative<std::shared_ptr<IResource>>(altCacheResult)) {
+            return altCacheResult;
+        }
+    }
+
     const std::lock_guard<std::mutex> lock(mMutex);
 
     auto cacheFind = mResourceCache.find(identifier);
     if (cacheFind == mResourceCache.end()) {
-        return nullptr;
+        return ResourceLoadError::NotCached;
     }
 
-    return &cacheFind->second;
+    return cacheFind->second;
 }
 
-const std::variant<ResourceManager::ResourceLoadError, std::shared_ptr<IResource>>*
-ResourceManager::CheckCache(const std::string& filePath) {
-    return CheckCache({ filePath, mDefaultCacheOwner, mDefaultCacheArchive });
+std::variant<ResourceManager::ResourceLoadError, std::shared_ptr<IResource>>
+ResourceManager::CheckCache(const std::string& filePath, bool loadExact) {
+    return CheckCache({ filePath, mDefaultCacheOwner, mDefaultCacheArchive }, loadExact);
 }
 
 std::shared_ptr<IResource> ResourceManager::GetCachedResource(const ResourceIdentifier& identifier, bool loadExact) {
     // Gets the cached resource based on filePath.
-    auto cacheLine = CheckCache(identifier);
-    if (cacheLine == nullptr) {
-        return nullptr;
-    }
-    return GetCachedResource(*cacheLine);
+    return GetCachedResource(CheckCache(identifier, loadExact));
 }
 
 std::shared_ptr<IResource> ResourceManager::GetCachedResource(const std::string& filePath, bool loadExact) {
@@ -275,18 +289,25 @@ std::shared_ptr<IResource> ResourceManager::GetCachedResource(const std::string&
 }
 
 std::shared_ptr<IResource>
-ResourceManager::GetCachedResource(const std::variant<ResourceLoadError, std::shared_ptr<IResource>>& cacheLine) {
+ResourceManager::GetCachedResource(std::variant<ResourceLoadError, std::shared_ptr<IResource>> cacheLine) {
     // Gets the cached resource based on a cache line std::variant from the cache map.
-    if (auto* resource = std::get_if<std::shared_ptr<IResource>>(&cacheLine)) {
-        if (resource->use_count() <= 0) {
-            return nullptr;
-        }
+    if (std::holds_alternative<std::shared_ptr<IResource>>(cacheLine)) {
+        try {
+            auto resource = std::get<std::shared_ptr<IResource>>(cacheLine);
 
-        if ((*resource)->IsDirty()) {
-            return nullptr;
-        }
+            if (resource.use_count() <= 0) {
+                return nullptr;
+            }
 
-        return *resource;
+            if (resource->IsDirty()) {
+                return nullptr;
+            }
+
+            return resource;
+        } catch (std::bad_variant_access const& e) {
+            // This should never happen. The holds_alternative check above should prevent it.
+            SPDLOG_ERROR("Unexpected bad_variant_access in GetCachedResource: {}", e.what());
+        }
     }
 
     return nullptr;
@@ -398,6 +419,11 @@ size_t ResourceManager::UnloadResource(const ResourceIdentifier& identifier) {
 
 size_t ResourceManager::UnloadResource(const std::string& filePath) {
     return UnloadResource({ filePath, mDefaultCacheOwner, mDefaultCacheArchive });
+}
+
+void ResourceManager::CacheExternalResource(const std::string& filePath, std::shared_ptr<IResource> resource) {
+    const std::lock_guard<std::mutex> lock(mMutex);
+    mResourceCache[{ filePath, mDefaultCacheOwner, mDefaultCacheArchive }] = resource;
 }
 
 bool ResourceManager::WriteResource(const ResourceIdentifier& identifier, const std::vector<uint8_t>& data,

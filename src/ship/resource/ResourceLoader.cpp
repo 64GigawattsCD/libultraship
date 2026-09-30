@@ -100,23 +100,19 @@ std::shared_ptr<ResourceInitData> ResourceLoader::ReadResourceInitDataLegacy(con
         }
         return ReadResourceInitDataXml(filePath, xmlReader);
     } else {
-        auto headerBuffer = std::make_shared<std::vector<char>>(fileToLoad->Buffer->begin(),
-                                                                fileToLoad->Buffer->begin() + OTR_HEADER_SIZE);
-
-        if (headerBuffer->size() < OTR_HEADER_SIZE) {
+        if (fileToLoad->Buffer->size() < OTR_HEADER_SIZE) {
             SPDLOG_ERROR("Failed to parse ResourceInitData, buffer size too small. File: {}. Got {} bytes and "
                          "needed {} bytes.",
-                         filePath, headerBuffer->size(), OTR_HEADER_SIZE);
+                         filePath, fileToLoad->Buffer->size(), OTR_HEADER_SIZE);
             return nullptr;
         }
 
-        // Factories expect the buffer to not include the header,
-        // so we need to remove it from the buffer on the file
-        fileToLoad->Buffer = std::make_shared<std::vector<char>>(fileToLoad->Buffer->begin() + OTR_HEADER_SIZE,
-                                                                 fileToLoad->Buffer->end());
+        // Record where the body starts so CreateBinaryReader can skip the header
+        // without copying the buffer.
+        fileToLoad->BufferOffset = OTR_HEADER_SIZE;
 
-        // Create a reader for the header buffer
-        auto headerStream = std::make_shared<MemoryStream>(headerBuffer);
+        // Read the header from the start of the buffer (no copy needed).
+        auto headerStream = std::make_shared<MemoryStream>(fileToLoad->Buffer);
         auto headerReader = std::make_shared<BinaryReader>(headerStream);
         return ReadResourceInitDataBinary(filePath, headerReader);
     }
@@ -124,7 +120,7 @@ std::shared_ptr<ResourceInitData> ResourceLoader::ReadResourceInitDataLegacy(con
 
 std::shared_ptr<BinaryReader> ResourceLoader::CreateBinaryReader(std::shared_ptr<File> fileToLoad,
                                                                  std::shared_ptr<ResourceInitData> initData) {
-    auto stream = std::make_shared<MemoryStream>(fileToLoad->Buffer);
+    auto stream = std::make_shared<MemoryStream>(fileToLoad->Buffer, fileToLoad->BufferOffset);
     auto reader = std::make_shared<BinaryReader>(stream);
     reader->SetEndianness(initData->ByteOrder);
     return reader;
@@ -179,7 +175,8 @@ std::shared_ptr<ResourceInitData> ResourceLoader::ReadResourceInitData(const std
         initData->Format = RESOURCE_FORMAT_XML;
     }
 
-    initData->Type = Context::GetInstance()->GetResourceManager()->GetResourceLoader()->GetResourceType(parsed["type"]);
+    initData->Type =
+        Context::GetRawInstance()->GetResourceManager()->GetResourceLoader()->GetResourceType(parsed["type"]);
     initData->ResourceVersion = parsed["version"];
 
     return initData;
@@ -194,11 +191,11 @@ std::shared_ptr<IResource> ResourceLoader::LoadResource(std::string filePath, st
 
     if (initData == nullptr) {
         auto metaFilePath = filePath + ".meta";
-        auto metaFileToLoad = Context::GetInstance()->GetResourceManager()->LoadFileProcess(metaFilePath);
+        auto metaFileToLoad = Context::GetRawInstance()->GetResourceManager()->LoadFileProcess(metaFilePath);
 
         if (metaFileToLoad != nullptr) {
             auto initDataFromMetaFile = ReadResourceInitData(filePath, metaFileToLoad);
-            fileToLoad = Context::GetInstance()->GetResourceManager()->LoadFileProcess(initDataFromMetaFile->Path);
+            fileToLoad = Context::GetRawInstance()->GetResourceManager()->LoadFileProcess(initDataFromMetaFile->Path);
             initData = initDataFromMetaFile;
         } else {
             initData = ReadResourceInitDataLegacy(filePath, fileToLoad);
@@ -290,7 +287,7 @@ ResourceLoader::ReadResourceInitDataXml(const std::string& filePath, std::shared
 
     auto root = document->FirstChildElement();
     resourceInitData->Type =
-        Context::GetInstance()->GetResourceManager()->GetResourceLoader()->GetResourceType(root->Name());
+        Context::GetRawInstance()->GetResourceManager()->GetResourceLoader()->GetResourceType(root->Name());
     resourceInitData->ResourceVersion = root->IntAttribute("Version");
 
     return resourceInitData;
