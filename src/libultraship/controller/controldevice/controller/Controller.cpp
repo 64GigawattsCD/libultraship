@@ -49,11 +49,11 @@ Controller::Controller(uint8_t portIndex, std::vector<CONTROLLERBUTTONS_T> bitma
 static float GetNormalizedTriggerValue(uint8_t portIndex, SDL_GameControllerAxis axis) {
     float triggerValue = 0.0f;
 
-    if (Ship::Context::GetInstance()->GetControlDeck()->GamepadGameInputBlocked()) {
+    if (Ship::Context::GetRawInstance()->GetControlDeck()->GamepadGameInputBlocked()) {
         return triggerValue;
     }
 
-    for (const auto& [instanceId, gamepad] : Ship::Context::GetInstance()
+    for (const auto& [instanceId, gamepad] : Ship::Context::GetRawInstance()
                                                 ->GetControlDeck()
                                                 ->GetConnectedPhysicalDeviceManager()
                                                 ->GetConnectedSDLGamepadsForPort(portIndex)) {
@@ -67,11 +67,11 @@ static float GetNormalizedTriggerValue(uint8_t portIndex, SDL_GameControllerAxis
 }
 
 static bool IsSDLGamepadButtonPressed(uint8_t portIndex, SDL_GameControllerButton button) {
-    if (Ship::Context::GetInstance()->GetControlDeck()->GamepadGameInputBlocked()) {
+    if (Ship::Context::GetRawInstance()->GetControlDeck()->GamepadGameInputBlocked()) {
         return false;
     }
 
-    for (const auto& [instanceId, gamepad] : Ship::Context::GetInstance()
+    for (const auto& [instanceId, gamepad] : Ship::Context::GetRawInstance()
                                                 ->GetControlDeck()
                                                 ->GetConnectedPhysicalDeviceManager()
                                                 ->GetConnectedSDLGamepadsForPort(portIndex)) {

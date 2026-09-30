@@ -386,6 +386,32 @@ class Interpreter {
     void RunGuiOnly();
     void Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_replacements);
     void EndFrame();
+
+    // --- VR (stereo) rendering. VR-agnostic here: the game's VR layer supplies the per-eye
+    // camera-space -> eye-clip matrix + the target size. We render into a libultraship-managed
+    // off-screen framebuffer (mVrFb) so all of fast3d's viewport/scissor/aspect/invert-Y math works
+    // exactly as it does for the normal game framebuffer; the VR layer then blits mVrFb's color into
+    // the OpenXR swapchain image. RunVrEye substitutes the per-eye projection for the game's
+    // perspective (the world->camera lookAt is preserved); RunVrPanel renders flat (game projection,
+    // full 2D+3D) for non-gameplay screens (title/menu/intro) shown on the head-locked panel. ---
+    void RunVrEye(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtxReplacements, const float* eyeViewProj16,
+                  const float* skyViewProj16, const float* hudViewProj16, const float* full2DViewProj16,
+                  Gfx* skyDome, int eyeWidth, int eyeHeight);
+    void RunVrPanel(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtxReplacements, int width, int height);
+    unsigned int GetVrFbTextureId() const; // GL texture id of mVrFb's color attachment (0 if none)
+    int32_t GetVrFbId() const {            // managed framebuffer id of the VR render target (-1 if none);
+        return mVrFb;                      // lets gDPCopyFB-style effects capture the VR frame
+    }
+    // Registers a framebuffer as a scaled-copy target: every CopyFrameBuffer into it scale-blits
+    // the whole source (the render dims at execution time) into dst rect [0,0,dstW,dstH] instead
+    // of the default 1:1 region copy (which clips when the render resolution exceeds the
+    // destination framebuffer's size). Sticky so VR's per-eye re-execution of the display list
+    // gets the scaled copy in BOTH eyes.
+    void SetFbCopyScaledTarget(int fbId, int dstW, int dstH) {
+        mScaledCopyTargetFb = fbId;
+        mScaledCopyDstW = dstW;
+        mScaledCopyDstH = dstH;
+    }
     void HandleWindowEvents();
     bool IsFrameReady();
     bool ViewportMatchesRendererResolution();
@@ -511,6 +537,29 @@ class Interpreter {
     int32_t mCurWindowPosY{};
     GfxDimensions mCurDimensions{};        // gfx_current_dimensions;
     GfxDimensions mPrvDimensions{};        // gfx_prev_dimensions;
+    // VR rendering state. mVrEyeActive gates the per-eye projection substitution in GfxSpMatrix and
+    // the aspect-ratio bypass in AdjXForAspectRatio. mVrFb is a reused managed render-target fb.
+    bool  mVrEyeActive = false;
+    float mVrEyeVP[4][4] = {};
+    float mVrHudVP[4][4] = {};         // head-locked HUD plane (post-3D ortho draws map onto this)
+    float mVrFull2D[4][4] = {};        // full-FOV head-locked plane (pre-3D screen-space 2D maps onto this so
+                                       // it fills the view head-locked instead of doubling under the per-eye submit)
+    bool  mVrSeenPerspective = false;  // a 3D (perspective) draw has happened this eye -> ortho now = HUD
+    bool  mVrSeenHudOrtho = false;     // the HUD's 2D ortho has started -> everything after = HUD (incl. the
+                                       // item-box 3D item) so it maps onto the HUD plane, not the world
+    float mVrSkyVP[4][4] = {};         // rotation-only sky view-proj (sky dome + 2D-sky spherical remap)
+    bool  mVrSky2D = false;            // current projection is the pre-3D 2D-sky ortho -> GfxSpVertex remaps
+                                       // each vertex's NDC equiangularly onto the dome via mVrSkyVP
+    bool  mVrInSkyDome = false;        // true while emitting the sky-dome DL -> verts use mVrSkyVP, no NDC shift
+    int   mVrDomeTriCount = 0;         // diagnostic: dome triangles reaching the rasterizer this pass
+    int   mVrDomeTriDrawn = 0;         // diagnostic: dome triangles past clip-reject (actually drawn)
+    int   mVrGameClearRectCount = 0;   // diagnostic: pre-3D rects suppressed in the game pass (the clear)
+    int   mVrFb = -1;
+    int   mScaledCopyTargetFb = -1; // scaled-copy override for CopyFrameBuffer (see SetFbCopyScaledTarget)
+    int   mScaledCopyDstW = 0;
+    int   mScaledCopyDstH = 0;
+    void  RenderVrTarget(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtxReplacements, int width,
+                         int height, Gfx* skyDome = nullptr); // shared body for RunVrEye/RunVrPanel
     XYWidthHeight mGameWindowViewport{};   // gfx_current_game_window_viewport;
     XYWidthHeight mNativeDimensions{};     // gfx_native_dimensions;
     XYWidthHeight mPrevNativeDimensions{}; // gfx_prev_native_dimensions;

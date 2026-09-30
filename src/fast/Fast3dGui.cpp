@@ -378,7 +378,7 @@ static void ArcadeKartResetDx11PostFxResources(ID3D11Device* device) {
 }
 
 static bool ArcadeKartShouldUseDx11PostFxShader() {
-    return Ship::Context::GetRawInstance()->GetConfig()->GetWindowBackend() == Ship::WindowBackend::FAST3D_DXGI_DX11;
+    return Ship::Context::GetRawInstance()->GetWindow()->GetWindowBackend() == Fast::WindowBackend::FAST3D_DXGI_DX11;
 }
 
 static bool ArcadeKartCreateDx11PixelShader(ID3D11Device* device, const char* shaderSource,
@@ -1012,7 +1012,7 @@ void Fast3dGui::DrawGame() {
     uintptr_t fb = Ship::Context::GetRawInstance()->GetWindow()->GetGfxFrameBuffer();
     ImGui::SetCursorPos(pos);
     ImVec2 imagePos = ImGui::GetCursorScreenPos();
-    if (CVarGetInteger("gArcadeKart.PostFx.Enabled", 1) != 0) {
+    if (Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger("gArcadeKart.PostFx.Enabled", 1) != 0) {
         if (ArcadeKartDrawLayeredPostFxGame(imagePos, size)) {
             ImGui::Dummy(size);
         } else if (fb) {

@@ -1456,6 +1456,8 @@ void Interpreter::CalculateNormalDir(const F3DLight_t* light, float coeffs[3]) {
     Interpreter::NormalizeVector(coeffs);
 }
 
+extern "C" bool vr_sky_dome_active(); // SkyDomeVR.cpp - true when the 3D sky dome replaces the flat 2D sky
+
 void Interpreter::GfxSpMatrix(uint8_t parameters, const int32_t* addr) {
     float matrix[4][4];
 
@@ -1490,7 +1492,45 @@ void Interpreter::GfxSpMatrix(uint8_t parameters, const int32_t* addr) {
 
     if (parameters & mtx_projection) {
         if (parameters & mtx_load) {
-            memcpy(mRsp->P_matrix, matrix, sizeof(matrix));
+            mVrSky2D = false; // only the pre-3D 2D-sky branch below re-arms the per-vertex sky remap
+            if (mVrEyeActive && mVrSeenHudOrtho) {
+                // Once the HUD's 2D ortho has started, EVERYTHING after it is HUD - including the
+                // item-box 3D item (its own perspective load). Map it onto the head-locked HUD plane
+                // (P = matrix * hud_vp) so it sits at HUD scale, not world scale.
+                MatrixMul(mRsp->P_matrix, matrix, mVrHudVP);
+            } else if (mVrEyeActive && matrix[3][3] > -0.5f && matrix[3][3] < 0.5f) {
+                // Perspective (3D world): substitute the per-eye camera-space -> eye-clip matrix. The
+                // game's world->camera lookAt that follows (G_MTX_MUL projection) composes onto it.
+                memcpy(mRsp->P_matrix, mVrEyeVP, sizeof(mRsp->P_matrix));
+                mVrSeenPerspective = true;
+            } else if (mVrEyeActive && matrix[3][3] > 0.5f && mVrSeenPerspective) {
+                // First HUD ortho (drawn after the 3D world): reposition onto the head-locked HUD plane
+                // and mark the HUD as started. Ortho BEFORE any 3D = the 2D skybox -> else branch.
+                MatrixMul(mRsp->P_matrix, matrix, mVrHudVP);
+                mVrSeenHudOrtho = true;
+            } else if (mVrEyeActive && matrix[3][3] > 0.5f && !mVrSeenPerspective && vr_sky_dome_active()) {
+                // Pre-3D 2D sky ortho (MK64's gradient quad + cloud/star/snow sprites, drawn BEFORE the
+                // world). Keep the plain ortho as P (MP = MV * ortho then yields true screen NDC) and arm
+                // the per-vertex remap: GfxSpVertex converts each vertex's NDC to its world azimuth /
+                // elevation (the sprite placement is ANGLE-linear: NDC 1.0 <-> the game-sky half-angle)
+                // and projects it onto the dome sphere through the rotation-only sky VP. A flat-plane
+                // matrix cannot express that mapping - its tangent-linear plane made center clouds rotate
+                // ~20% faster than the world during kart turns (the "clouds swim when I turn" bug). The
+                // flat gradient tris under this projection are still suppressed in GfxSpTri1; the
+                // textured cloud/star/snow tris survive and ride the remap.
+                memcpy(mRsp->P_matrix, matrix, sizeof(matrix));
+                mVrSky2D = true;
+            } else if (mVrEyeActive) {
+                // Screen-space 2D during the eye pass that no earlier branch claimed: the pre-3D course-open
+                // intro overlay (the "transition in"), and the 2D sky on tracks without the VR dome. Emit it on
+                // the full-FOV HEAD-LOCKED plane instead of raw screen-space. Raw ortho is IDENTICAL in both
+                // eyes, and the per-eye ASYMMETRIC submission fov then shoves the two copies apart -> the
+                // course-open double vision. The head-locked plane carries no inter-eye disparity, so 2D can't
+                // double; the 3D world (perspective branch above) keeps its real per-eye stereo.
+                MatrixMul(mRsp->P_matrix, matrix, mVrFull2D);
+            } else {
+                memcpy(mRsp->P_matrix, matrix, sizeof(matrix));
+            }
         } else {
             MatrixMul(mRsp->P_matrix, matrix, mRsp->P_matrix);
         }
@@ -1527,6 +1567,11 @@ void Interpreter::GfxSpPopMatrix(uint32_t count) {
 }
 
 float Interpreter::AdjXForAspectRatio(float x) const {
+    // VR: the per-eye projection (mVrEyeVP) already bakes the correct per-eye aspect, so the 4:3
+    // widescreen fixup would double-correct and stretch the world horizontally. Pass X through.
+    if (mVrEyeActive) {
+        return x;
+    }
     // Skip widescreen adjustment for fixed-size off-screen FBs (HUD elements,
     // small capture buffers), or those which specify a fixed aspect ratio.
     if (mFbActive && mActiveFrameBuffer != mFrameBuffers.end() &&
@@ -1551,6 +1596,16 @@ void Interpreter::AdjustWidthHeightForScale(uint32_t& width, uint32_t& height, u
     }
 }
 
+// Game-sky angular half-extents (radians), provided by the project's VR layer (src/port/vr/vr.cpp).
+// Forward-declared (C linkage) so this engine TU doesn't need the game module's include path. The 2D sky
+// sprites' screen NDC is ANGLE-linear (NDC 1.0 <-> this half-angle), so the per-vertex remap below uses
+// these to recover each vertex's true world azimuth/elevation.
+extern "C" float vr_sky_fov_h();
+extern "C" float vr_sky_fov_v();
+// Azimuth to subtract from each 2D-sky sprite vertex (radians): the chase-cam yaw in Diorama (decouple the
+// clouds from the non-rotating tabletop), 0 in the in-world modes (keep them world-anchored). See vr.cpp.
+extern "C" float vr_sky_decouple_rad();
+
 void Interpreter::GfxSpVertex(size_t n_vertices, size_t dest_index, const F3DVtx* vertices) {
     for (size_t i = 0; i < n_vertices; i++, dest_index++) {
         const F3DVtx_t* v = &vertices[i].v;
@@ -1569,6 +1624,30 @@ void Interpreter::GfxSpVertex(size_t n_vertices, size_t dest_index, const F3DVtx
                   v->ob[2] * mRsp->MP_matrix[2][2] + mRsp->MP_matrix[3][2];
         float w = v->ob[0] * mRsp->MP_matrix[0][3] + v->ob[1] * mRsp->MP_matrix[1][3] +
                   v->ob[2] * mRsp->MP_matrix[2][3] + mRsp->MP_matrix[3][3];
+
+        if (mVrEyeActive && mVrSky2D && !mVrInSkyDome) {
+            // Pre-3D 2D-sky vertex (cloud/star/snow sprite corner): x,y,z,w currently hold the plain
+            // screen NDC (MP = MV * ortho - the sky branch in GfxSpMatrix left the ortho unsubstituted).
+            // The sprite placement is ANGLE-linear (NDC 1.0 <-> the game-sky half-angle), so recover the
+            // vertex's true azimuth/elevation, place it on the dome sphere, and project through the
+            // rotation-only sky VP. Equiangular by construction -> the sprites rotate exactly 1:1 with
+            // both the kart heading and the head, at every screen position (a flat-plane matrix is
+            // tangent-linear and made center clouds lead the world by ~20% during kart turns).
+            const float invW = (w != 0.0f) ? (1.0f / w) : 1.0f;
+            // Subtract the chase-cam yaw in Diorama so the sprite sits at its intrinsic (kart-independent)
+            // azimuth -> head-stable against the fixed tabletop. 0 in the in-world modes -> world-anchored.
+            const float az = (x * invW) * vr_sky_fov_h() - vr_sky_decouple_rad();
+            const float el = (y * invW) * vr_sky_fov_v();
+            const float D2 = 1000.0f; // dome radius (game units; matches the SkyDomeVR sphere + sky VP clip range)
+            const float ce = cosf(el);
+            const float px = D2 * sinf(az) * ce;
+            const float py = D2 * sinf(el);
+            const float pz = -D2 * cosf(az) * ce;
+            x = px * mVrSkyVP[0][0] + py * mVrSkyVP[1][0] + pz * mVrSkyVP[2][0] + mVrSkyVP[3][0];
+            y = px * mVrSkyVP[0][1] + py * mVrSkyVP[1][1] + pz * mVrSkyVP[2][1] + mVrSkyVP[3][1];
+            z = px * mVrSkyVP[0][2] + py * mVrSkyVP[1][2] + pz * mVrSkyVP[2][2] + mVrSkyVP[3][2];
+            w = px * mVrSkyVP[0][3] + py * mVrSkyVP[1][3] + pz * mVrSkyVP[2][3] + mVrSkyVP[3][3];
+        }
 
         float world_pos[3] = { 0.0 };
         if (mRsp->geometry_mode & G_LIGHTING_POSITIONAL) {
@@ -1751,6 +1830,18 @@ void Interpreter::GfxSpModifyVertex(uint16_t vtx_idx, uint8_t where, uint32_t va
 }
 
 void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bool is_rect) {
+    // Suppress the game's flat 2D sky quad when the 3D sky dome is active: in the game pass
+    // (not the dome pass), the pre-3D ortho (mVrSeenPerspective still false) IS the flat sky -> skip its
+    // triangles so they don't draw over the dome. The dome's own tris run with mVrInSkyDome=true.
+    // The 3D sky dome painted the background. In the game pass (not the dome pass), suppress only the
+    // full-screen framebuffer-clear RECTANGLE so it doesn't paint over the dome. The flat gradient sky is
+    // gated off game-side (Sky::Draw), and the cloud/star/snow TRIANGLES are LEFT ALONE so they still draw.
+    if (mVrEyeActive && !mVrInSkyDome && !mVrSeenPerspective && is_rect && vr_sky_dome_active()) {
+        mVrGameClearRectCount++;
+        return;
+    }
+    if (mVrInSkyDome) mVrDomeTriCount++;
+
     struct LoadedVertex* v1 = &mRsp->loaded_vertices[vtx1_idx];
     struct LoadedVertex* v2 = &mRsp->loaded_vertices[vtx2_idx];
     struct LoadedVertex* v3 = &mRsp->loaded_vertices[vtx3_idx];
@@ -1762,6 +1853,7 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
         // The whole triangle lies outside the visible area
         return;
     }
+    if (mVrInSkyDome) mVrDomeTriDrawn++; // diagnostic: dome tris past clip-reject (actually rasterized)
 
     const uint32_t cull_both = get_attr(CULL_BOTH);
     const uint32_t cull_front = get_attr(CULL_FRONT);
@@ -1914,6 +2006,14 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
     key.options = cc_options;
 
     ColorCombiner* comb = LookupOrCreateColorCombiner(key);
+
+    // VR sky dome: the dome already painted the sky, so suppress the game's flat UNTEXTURED gradient sky
+    // quad (pre-3D, vertex-color only) - it would cover the dome. But KEEP the TEXTURED pre-3D draws
+    // (clouds / stars / snow) so they still render. Only fires in the eye pass with the dome active.
+    if (mVrEyeActive && !mVrInSkyDome && !mVrSeenPerspective && !is_rect && vr_sky_dome_active()
+        && !comb->usedTextures[0] && !comb->usedTextures[1]) {
+        return;
+    }
 
     uint32_t tm = 0;
     uint32_t tex_width[2], tex_height[2], tex_width2[2], tex_height2[2];
@@ -2833,6 +2933,29 @@ void Interpreter::GfxDrawRectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_
     ur->y = ulyf;
     ur->z = -1.0f;
     ur->w = 1.0f;
+
+    // VR: HUD texture rectangles (item box, lap / position counters, level-name banner, etc.) are drawn
+    // in screen space and bypass the projection matrix entirely - so the matrix-based HUD reposition
+    // never touched them. After the 3D world (mVrSeenPerspective), remap their clip-space corners onto
+    // the head-locked HUD plane (same hud_vp the matrix HUD uses) so they sit at HUD scale/position
+    // instead of at the screen edge / wrong scale. Pre-world rects (the framebuffer clear) are left alone.
+    // Full-screen rects (the thunderbolt flash, fade overlays) are also left alone: remapped onto the HUD
+    // plane they read as a white quad floating in front of the kart; in raw clip space the quad covers the
+    // whole eye, so the flash tints the entire view like it does on a flat screen. AdjXForAspectRatio is a
+    // pass-through under VR, so full-screen corners arrive at +-1 and the 0.9 threshold is safe.
+    if (mVrEyeActive && mVrSeenPerspective) {
+        const bool fullScreen = ulxf <= -0.9f && ulyf >= 0.9f && lrxf >= 0.9f && lryf <= -0.9f;
+        if (!fullScreen) {
+            struct LoadedVertex* rectVerts[4] = { ul, ll, lr, ur };
+            for (int i = 0; i < 4; i++) {
+                float x = rectVerts[i]->x, y = rectVerts[i]->y, z = rectVerts[i]->z, w = rectVerts[i]->w;
+                rectVerts[i]->x = x * mVrHudVP[0][0] + y * mVrHudVP[1][0] + z * mVrHudVP[2][0] + w * mVrHudVP[3][0];
+                rectVerts[i]->y = x * mVrHudVP[0][1] + y * mVrHudVP[1][1] + z * mVrHudVP[2][1] + w * mVrHudVP[3][1];
+                rectVerts[i]->z = x * mVrHudVP[0][2] + y * mVrHudVP[1][2] + z * mVrHudVP[2][2] + w * mVrHudVP[3][2];
+                rectVerts[i]->w = x * mVrHudVP[0][3] + y * mVrHudVP[1][3] + z * mVrHudVP[2][3] + w * mVrHudVP[3][3];
+            }
+        }
+    }
 
     // The coordinates for texture rectangle shall bypass the viewport setting
     struct XYWidthHeight default_viewport;
@@ -5167,6 +5290,125 @@ void Interpreter::EndFrame() {
     mWapi->SwapBuffersEnd();
 }
 
+// --- VR (stereo) rendering ---------------------------------------------------
+unsigned int Interpreter::GetVrFbTextureId() const {
+    if (mVrFb < 0) {
+        return 0;
+    }
+    return (unsigned int)(uintptr_t)mRapi->GetFramebufferTextureId(mVrFb);
+}
+
+// Shared body: render the command list into the managed off-screen fb mVrFb at width x height,
+// mirroring Run()'s framebuffer setup so all viewport/scissor/aspect/invert-Y math behaves exactly
+// as for the normal game fb. Does NOT blit to the screen - the VR layer blits mVrFb into the OpenXR
+// swapchain afterwards (orientation handled there).
+extern "C" bool vr_sky_dome_active(); // SkyDomeVR.cpp - true when the dome replaces the flat 2D sky
+
+void Interpreter::RenderVrTarget(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtxReplacements, int width,
+                                 int height, Gfx* skyDome) {
+    mVrSeenPerspective = false; // reset the 3D/2D split tracking for this render pass
+    mVrSeenHudOrtho = false;
+    mVrSky2D = false;
+    SpReset();
+    mGetPixelDepthPending.clear();
+    mGetPixelDepthCached.clear();
+    mCurMtxReplacements = &mtxReplacements;
+
+    if (mVrFb < 0) {
+        mVrFb = mRapi->CreateFramebuffer();
+    }
+    // Render target (color + depth), invert-Y like the game fb so content lands upright in the
+    // texture (matching the normal mGameFb path the desktop present uses).
+    mRapi->UpdateFramebufferParameters(mVrFb, (uint32_t)width, (uint32_t)height, 1, true, true, true, false);
+
+    GfxDimensions savedCur = mCurDimensions;
+    bool savedRendersToFb = mRendersToFb;
+    mCurDimensions.width = (uint32_t)width;
+    mCurDimensions.height = (uint32_t)height;
+    mCurDimensions.aspect_ratio = (float)width / (float)height;
+    mRendersToFb = true; // skip the direct-to-window viewport offset path in AdjustVIewportOrScissor
+
+    mRapi->StartFrame();
+    float noiseScale = mNativeDimensions.height ? (float)mCurDimensions.height / mNativeDimensions.height : 1.0f;
+    mRapi->StartDrawToFramebuffer(mVrFb, noiseScale);
+    mRapi->ClearFramebuffer(true, true);
+    mRdp->viewport_or_scissor_changed = true;
+    mRenderingState.viewport = {};
+    mRenderingState.scissor = {};
+
+    // VR sky dome FIRST: an opaque gradient sphere at infinity, rendered with the rotation-only sky VP so
+    // it anchors to head yaw AND pitch. It runs in its own exec pass (no game lookAt in flight); we seed
+    // MP_matrix with the sky VP since the dome DL carries no matrix loads. The game DL then draws over it,
+    // and the game's own flat sky quad is suppressed (GfxSpTri) so it doesn't double the sky.
+    bool domeRanThisFrame = false;
+    if (skyDome != nullptr && vr_sky_dome_active()) {
+        domeRanThisFrame = true;
+        mVrInSkyDome = true;
+        mVrDomeTriCount = 0;
+        mVrDomeTriDrawn = 0;
+        mVrGameClearRectCount = 0;
+        memcpy(mRsp->MP_matrix, mVrSkyVP, sizeof(mRsp->MP_matrix));
+        g_exec_stack.start((F3DGfx*)skyDome);
+        while (!g_exec_stack.cmd_stack.empty()) {
+            gfx_step();
+        }
+        Flush();
+        mVrInSkyDome = false;
+        mVrSeenPerspective = false; // game pass must start clean
+        mVrSeenHudOrtho = false;
+        mVrSky2D = false;
+    }
+
+    g_exec_stack.start((F3DGfx*)commands);
+    while (!g_exec_stack.cmd_stack.empty()) {
+        gfx_step();
+    }
+    Flush();
+
+    if (domeRanThisFrame) {
+        static int sDomeLog = 0;
+        if (sDomeLog < 4) {
+            sDomeLog++;
+            SPDLOG_INFO("[VR-DOME] domeTris(reached)={} domeTris(drawn)={} gameClearRectsSuppressed={} skyVP00={}",
+                        mVrDomeTriCount, mVrDomeTriDrawn, mVrGameClearRectCount, mVrSkyVP[0][0]);
+        }
+    }
+
+    mCurDimensions = savedCur;
+    mRendersToFb = savedRendersToFb;
+    mGfxFrameBuffer = 0;
+}
+
+// Per eye: substitute the per-eye camera-space -> eye-clip projection, render the 3D scene into mVrFb.
+// mtxReplacements carries the frame-interpolation matrices for this step (empty = the keyframe).
+void Interpreter::RunVrEye(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtxReplacements,
+                           const float* eyeViewProj16, const float* skyViewProj16, const float* hudViewProj16,
+                           const float* full2DViewProj16, Gfx* skyDome, int eyeWidth, int eyeHeight) {
+    if (eyeViewProj16 != nullptr) {
+        memcpy(mVrEyeVP, eyeViewProj16, sizeof(mVrEyeVP));
+    }
+    if (skyViewProj16 != nullptr) {
+        memcpy(mVrSkyVP, skyViewProj16, sizeof(mVrSkyVP));
+    }
+    if (hudViewProj16 != nullptr) {
+        memcpy(mVrHudVP, hudViewProj16, sizeof(mVrHudVP));
+    }
+    if (full2DViewProj16 != nullptr) {
+        memcpy(mVrFull2D, full2DViewProj16, sizeof(mVrFull2D));
+    }
+    mVrEyeActive = true;
+    RenderVrTarget(commands, mtxReplacements, eyeWidth, eyeHeight, skyDome);
+    mVrEyeActive = false;
+}
+
+// Non-gameplay screens (title/menu/intro/credits): render the whole flat frame (2D + 3D, the game's
+// own projection, no stereo substitution) into mVrFb for the head-locked panel quad.
+void Interpreter::RunVrPanel(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtxReplacements, int width,
+                             int height) {
+    mVrEyeActive = false;
+    RenderVrTarget(commands, mtxReplacements, width, height);
+}
+
 void gfx_set_target_ucode(UcodeHandlers ucode) {
     ucode_handler_index = ucode;
 }
@@ -5213,6 +5455,23 @@ void Interpreter::CopyFrameBuffer(int fb_dst_id, int fb_src_id, bool copyOnce, b
     if (fb_src_id == 0 && mRendersToFb) {
         // read from the framebuffer we've been rendering to
         fb_src_id = mGameFb;
+    }
+
+    // Scaled-copy override, sticky per destination framebuffer: the default copy below is a 1:1
+    // region copy sized to the CURRENT render dimensions, which silently clips whenever the render
+    // resolution exceeds the destination framebuffer (e.g. a high internal resolution into a
+    // window-sized reusable fb). A registered target instead gets the WHOLE source (the render
+    // dims at execution time - per-eye sizes in VR, the internal render size on flat) scaled into
+    // its fixed dst rect. Sticky rather than one-shot because VR executes the same display list
+    // once per eye - a one-shot override only covered the first eye and the second eye's copy ran
+    // the legacy clipped path.
+    if (mScaledCopyTargetFb >= 0 && fb_dst_id == mScaledCopyTargetFb) {
+        mRapi->CopyFramebuffer(fb_dst_id, fb_src_id, 0, 0, (int) mCurDimensions.width,
+                               (int) mCurDimensions.height, 0, 0, mScaledCopyDstW, mScaledCopyDstH);
+        if (hasCopiedPtr != nullptr) {
+            *hasCopiedPtr = true;
+        }
+        return;
     }
 
     int srcX0, srcY0, srcX1, srcY1;

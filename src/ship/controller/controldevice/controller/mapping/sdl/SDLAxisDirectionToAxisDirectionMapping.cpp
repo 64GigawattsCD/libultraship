@@ -27,7 +27,7 @@ static float ApplySlopeSteeringResistance(float axisDirectionValue, StickIndex s
     }
 
     float slopeSteeringForce =
-        Context::GetInstance()->GetConsoleVariables()->GetFloat(KART_CONTROLLER_SLOPE_STEERING_FORCE_CVAR, 0.0f);
+        Context::GetRawInstance()->GetConsoleVariables()->GetFloat(KART_CONTROLLER_SLOPE_STEERING_FORCE_CVAR, 0.0f);
     bool isFightingSlope = (slopeSteeringForce > 0.0f && direction == LEFT) ||
                            (slopeSteeringForce < 0.0f && direction == RIGHT);
     if (!isFightingSlope) {

@@ -631,7 +631,7 @@ void InputEditorWindow::DrawStickSection(uint8_t port, uint8_t stick, int32_t id
     DrawStickDirectionLine(ICON_FA_ARROW_RIGHT, port, stick, Ship::RIGHT, color);
     ImGui::EndGroup();
     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-    if (ImGui::TreeNode(StringHelper::Sprintf("%s Options##%d", stick == LEFT ? "Steering / Forward Back" : "Analog Stick", id).c_str())) {
+    if (ImGui::TreeNode(StringHelper::Sprintf("%s Options##%d", stick == Ship::LEFT ? "Steering / Forward Back" : "Analog Stick", id).c_str())) {
         ImGui::Text("Sensitivity:");
 
         int32_t sensitivityPercentage = controllerStick->GetSensitivityPercentage();
@@ -1283,7 +1283,7 @@ void InputEditorWindow::DrawPortTab(uint8_t portIndex) {
         }
 
         if (ImGui::CollapsingHeader("Game Commands", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {
-            for (const auto& [bitmask, name] : Context::GetRawInstance()->GetControlDeck()->GetAllButtonNames()) {
+            for (const auto& [bitmask, name] : Ship::Context::GetRawInstance()->GetControlDeck()->GetAllButtonNames()) {
                 switch (bitmask) {
                     case BTN_A:
                     case BTN_B:
