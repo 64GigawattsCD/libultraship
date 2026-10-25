@@ -409,8 +409,13 @@ static LRESULT CALLBACK gfx_dxgi_wnd_proc(HWND h_wnd, UINT message, WPARAM w_par
                          prcNewWindow->bottom - prcNewWindow->top, SWP_NOZORDER | SWP_NOACTIVATE);
             self->mPosX = prcNewWindow->left;
             self->mPosY = prcNewWindow->top;
-            self->current_width = prcNewWindow->right - prcNewWindow->left;
-            self->current_height = prcNewWindow->bottom - prcNewWindow->top;
+            // SetWindowPos sends WM_SIZE with client dimensions. The suggested DPI rect
+            // includes window borders and must not overwrite that renderable extent.
+            RECT client;
+            if (GetClientRect(h_wnd, &client)) {
+                self->current_width = client.right - client.left;
+                self->current_height = client.bottom - client.top;
+            }
             break;
         }
         case WM_ENDSESSION:
@@ -737,6 +742,11 @@ void GfxWindowBackendDXGI::SetMouseCallbacks(bool (*on_btn_down)(int btn), bool 
 }
 
 void GfxWindowBackendDXGI::GetDimensions(uint32_t* width, uint32_t* height, int32_t* posX, int32_t* posY) {
+    RECT client;
+    if (h_wnd && GetClientRect(h_wnd, &client) && client.right > client.left && client.bottom > client.top) {
+        current_width = client.right - client.left;
+        current_height = client.bottom - client.top;
+    }
     *width = current_width;
     *height = current_height;
     *posX = mPosX;

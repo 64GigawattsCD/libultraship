@@ -151,6 +151,7 @@ class Fast3dGui : public Ship::Gui {
     void DrawFloatingWindows() override;
     void CalculateGameViewport() override;
     void DrawGame() override;
+    virtual void DrawGameImageOverlay(ImVec2 imagePos, ImVec2 imageSize) {}
 
     /**
      * @brief Returns the ImTextureID for a texture identified by its integer ID.

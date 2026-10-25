@@ -1022,7 +1022,7 @@ void Fast3dGui::DrawGame() {
     } else if (fb) {
         ImGui::Image(reinterpret_cast<ImTextureID>(fb), size);
     }
-
+    DrawGameImageOverlay(imagePos, size);
     ImGui::End();
 }
 
