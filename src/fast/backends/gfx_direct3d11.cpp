@@ -3,6 +3,8 @@
 #include <cstdio>
 #include <vector>
 #include <cmath>
+#include <algorithm>
+#include <cstring>
 
 #include <map>
 #include <unordered_map>
@@ -938,6 +940,214 @@ void* GfxRenderingAPIDX11::GetFramebufferTextureId(int fb_id) {
     }
 
     return (void*)mTextures[textureId].resource_view.Get();
+}
+
+bool GfxRenderingAPIDX11::CopyFramebufferToTexture(int fb_id, ID3D11Texture2D* targetTexture, uint32_t* copiedWidth,
+                                                   uint32_t* copiedHeight) {
+    if (fb_id < 0 || fb_id >= (int)mFrameBuffers.size() || targetTexture == nullptr) {
+        return false;
+    }
+
+    FramebufferDX11& fb = mFrameBuffers[fb_id];
+    const uint32_t textureId = fb.texture_id;
+    if (textureId >= mTextures.size() || mTextures[textureId].texture == nullptr) {
+        return false;
+    }
+
+    ID3D11Texture2D* sourceTexture = mTextures[textureId].texture.Get();
+    D3D11_TEXTURE2D_DESC sourceDesc = {};
+    D3D11_TEXTURE2D_DESC targetDesc = {};
+    sourceTexture->GetDesc(&sourceDesc);
+    targetTexture->GetDesc(&targetDesc);
+
+    if (sourceDesc.Width == targetDesc.Width && sourceDesc.Height == targetDesc.Height &&
+        sourceDesc.SampleDesc.Count == targetDesc.SampleDesc.Count) {
+        mContext->CopyResource(targetTexture, sourceTexture);
+        if (copiedWidth != nullptr) {
+            *copiedWidth = sourceDesc.Width;
+        }
+        if (copiedHeight != nullptr) {
+            *copiedHeight = sourceDesc.Height;
+        }
+        return true;
+    }
+
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> resolvedSource;
+    if (sourceDesc.SampleDesc.Count > 1) {
+        D3D11_TEXTURE2D_DESC resolveDesc = sourceDesc;
+        resolveDesc.SampleDesc.Count = 1;
+        resolveDesc.SampleDesc.Quality = 0;
+        resolveDesc.BindFlags = 0;
+        resolveDesc.MiscFlags = 0;
+        if (FAILED(mDevice->CreateTexture2D(&resolveDesc, nullptr, resolvedSource.GetAddressOf()))) {
+            return false;
+        }
+        mContext->ResolveSubresource(resolvedSource.Get(), 0, sourceTexture, 0, DXGI_FORMAT_R8G8B8A8_UNORM);
+        sourceTexture = resolvedSource.Get();
+        sourceDesc = resolveDesc;
+    }
+
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> shaderSourceTexture;
+    if ((sourceDesc.BindFlags & D3D11_BIND_SHADER_RESOURCE) == 0) {
+        D3D11_TEXTURE2D_DESC shaderSourceDesc = sourceDesc;
+        shaderSourceDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        shaderSourceDesc.MiscFlags = 0;
+        shaderSourceDesc.CPUAccessFlags = 0;
+        shaderSourceDesc.Usage = D3D11_USAGE_DEFAULT;
+        if (FAILED(mDevice->CreateTexture2D(&shaderSourceDesc, nullptr, shaderSourceTexture.GetAddressOf()))) {
+            return false;
+        }
+        mContext->CopyResource(shaderSourceTexture.Get(), sourceTexture);
+        sourceTexture = shaderSourceTexture.Get();
+    }
+
+    const float sourceAspect = static_cast<float>(sourceDesc.Width) / static_cast<float>(sourceDesc.Height);
+    const float targetAspect = static_cast<float>(targetDesc.Width) / static_cast<float>(targetDesc.Height);
+    uint32_t outputWidth = targetDesc.Width;
+    uint32_t outputHeight = targetDesc.Height;
+    if (targetAspect > sourceAspect) {
+        outputHeight = targetDesc.Height;
+        outputWidth = static_cast<uint32_t>(static_cast<float>(outputHeight) * sourceAspect);
+    } else {
+        outputWidth = targetDesc.Width;
+        outputHeight = static_cast<uint32_t>(static_cast<float>(outputWidth) / sourceAspect);
+    }
+    outputWidth = std::max(1U, std::min(outputWidth, targetDesc.Width));
+    outputHeight = std::max(1U, std::min(outputHeight, targetDesc.Height));
+
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> sourceView;
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> targetView;
+    Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler;
+    Microsoft::WRL::ComPtr<ID3DBlob> vertexShaderBlob;
+    Microsoft::WRL::ComPtr<ID3DBlob> pixelShaderBlob;
+    Microsoft::WRL::ComPtr<ID3DBlob> compileErrors;
+    Microsoft::WRL::ComPtr<ID3D11VertexShader> vertexShader;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> pixelShader;
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = sourceDesc.Format;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+    if (FAILED(mDevice->CreateShaderResourceView(sourceTexture, &srvDesc, sourceView.GetAddressOf()))) {
+        return false;
+    }
+
+    D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+    rtvDesc.Format = targetDesc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS ? DXGI_FORMAT_R8G8B8A8_UNORM : targetDesc.Format;
+    rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+    if (FAILED(mDevice->CreateRenderTargetView(targetTexture, &rtvDesc, targetView.GetAddressOf()))) {
+        return false;
+    }
+
+    D3D11_SAMPLER_DESC samplerDesc = {};
+    samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+    if (FAILED(mDevice->CreateSamplerState(&samplerDesc, sampler.GetAddressOf()))) {
+        return false;
+    }
+
+    const char* shaderSource = R"(
+        Texture2D sourceTexture : register(t0);
+        SamplerState sourceSampler : register(s0);
+        struct VertexOut {
+            float4 position : SV_POSITION;
+            float2 uv : TEXCOORD0;
+        };
+        VertexOut VS(uint vertexId : SV_VertexID) {
+            float2 positions[3] = {
+                float2(-1.0f, -1.0f),
+                float2(-1.0f,  3.0f),
+                float2( 3.0f, -1.0f)
+            };
+            float2 uvs[3] = {
+                float2(0.0f, 1.0f),
+                float2(0.0f, -1.0f),
+                float2(2.0f, 1.0f)
+            };
+            VertexOut output;
+            output.position = float4(positions[vertexId], 0.0f, 1.0f);
+            output.uv = uvs[vertexId];
+            return output;
+        }
+        float4 PS(VertexOut input) : SV_TARGET {
+            return sourceTexture.Sample(sourceSampler, input.uv);
+        }
+    )";
+
+    if (FAILED(mD3dCompile(shaderSource, strlen(shaderSource), nullptr, nullptr, nullptr, "VS", "vs_4_0", 0, 0,
+                           vertexShaderBlob.GetAddressOf(), compileErrors.GetAddressOf())) ||
+        FAILED(mD3dCompile(shaderSource, strlen(shaderSource), nullptr, nullptr, nullptr, "PS", "ps_4_0", 0, 0,
+                           pixelShaderBlob.GetAddressOf(), compileErrors.ReleaseAndGetAddressOf()))) {
+        return false;
+    }
+    if (FAILED(mDevice->CreateVertexShader(vertexShaderBlob->GetBufferPointer(), vertexShaderBlob->GetBufferSize(),
+                                           nullptr, vertexShader.GetAddressOf())) ||
+        FAILED(mDevice->CreatePixelShader(pixelShaderBlob->GetBufferPointer(), pixelShaderBlob->GetBufferSize(),
+                                          nullptr, pixelShader.GetAddressOf()))) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> previousRtv;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilView> previousDsv;
+    Microsoft::WRL::ComPtr<ID3D11VertexShader> previousVs;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> previousPs;
+    Microsoft::WRL::ComPtr<ID3D11InputLayout> previousInputLayout;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> previousSrv;
+    Microsoft::WRL::ComPtr<ID3D11SamplerState> previousSampler;
+    D3D11_VIEWPORT previousViewport = {};
+    UINT previousViewportCount = 1;
+    D3D11_PRIMITIVE_TOPOLOGY previousTopology;
+
+    mContext->OMGetRenderTargets(1, previousRtv.GetAddressOf(), previousDsv.GetAddressOf());
+    mContext->VSGetShader(previousVs.GetAddressOf(), nullptr, nullptr);
+    mContext->PSGetShader(previousPs.GetAddressOf(), nullptr, nullptr);
+    mContext->IAGetInputLayout(previousInputLayout.GetAddressOf());
+    mContext->IAGetPrimitiveTopology(&previousTopology);
+    mContext->PSGetShaderResources(0, 1, previousSrv.GetAddressOf());
+    mContext->PSGetSamplers(0, 1, previousSampler.GetAddressOf());
+    mContext->RSGetViewports(&previousViewportCount, &previousViewport);
+
+    const float clearColor[] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    D3D11_VIEWPORT viewport = {};
+    viewport.TopLeftX = 0.0f;
+    viewport.TopLeftY = 0.0f;
+    viewport.Width = static_cast<float>(outputWidth);
+    viewport.Height = static_cast<float>(outputHeight);
+    viewport.MinDepth = 0.0f;
+    viewport.MaxDepth = 1.0f;
+
+    mContext->ClearRenderTargetView(targetView.Get(), clearColor);
+    mContext->OMSetRenderTargets(1, targetView.GetAddressOf(), nullptr);
+    mContext->RSSetViewports(1, &viewport);
+    mContext->IASetInputLayout(nullptr);
+    mContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    mContext->VSSetShader(vertexShader.Get(), nullptr, 0);
+    mContext->PSSetShader(pixelShader.Get(), nullptr, 0);
+    mContext->PSSetShaderResources(0, 1, sourceView.GetAddressOf());
+    mContext->PSSetSamplers(0, 1, sampler.GetAddressOf());
+    mContext->Draw(3, 0);
+
+    ID3D11ShaderResourceView* nullSrv = nullptr;
+    mContext->PSSetShaderResources(0, 1, &nullSrv);
+    mContext->OMSetRenderTargets(1, previousRtv.GetAddressOf(), previousDsv.Get());
+    mContext->RSSetViewports(previousViewportCount, &previousViewport);
+    mContext->IASetInputLayout(previousInputLayout.Get());
+    mContext->IASetPrimitiveTopology(previousTopology);
+    mContext->VSSetShader(previousVs.Get(), nullptr, 0);
+    mContext->PSSetShader(previousPs.Get(), nullptr, 0);
+    mContext->PSSetShaderResources(0, 1, previousSrv.GetAddressOf());
+    mContext->PSSetSamplers(0, 1, previousSampler.GetAddressOf());
+
+    if (copiedWidth != nullptr) {
+        *copiedWidth = outputWidth;
+    }
+    if (copiedHeight != nullptr) {
+        *copiedHeight = outputHeight;
+    }
+    return true;
 }
 
 void GfxRenderingAPIDX11::SelectTextureFb(int fbID) {

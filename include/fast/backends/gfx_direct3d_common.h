@@ -105,6 +105,7 @@ class GfxRenderingAPIDX11 final : public GfxRenderingAPI {
     std::unordered_map<std::pair<float, float>, uint16_t, hash_pair_ff>
     GetPixelDepth(int fb_id, const std::set<std::pair<float, float>>& coordinates) override;
     void* GetFramebufferTextureId(int fbId) override;
+    bool CopyFramebufferToTexture(int fbId, ID3D11Texture2D* targetTexture, uint32_t* copiedWidth, uint32_t* copiedHeight);
     void SelectTextureFb(int fbId) override;
     void DeleteTexture(uint32_t texId) override;
     void SetTextureFilter(FilteringMode mode) override;

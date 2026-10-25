@@ -28,6 +28,10 @@
 #include "fast/lus_gbi.h"
 #include "fast/backends/gfx_window_manager_api.h"
 #include "fast/backends/gfx_rendering_api.h"
+#ifdef ENABLE_DX11
+#include <wrl/client.h>
+#include "fast/backends/gfx_direct3d_common.h"
+#endif
 
 #include "ship/window/gui/Gui.h"
 #include "ship/resource/ResourceManager.h"
@@ -4762,6 +4766,52 @@ extern "C" uintptr_t gfx_get_framebuffer_texture_id(int framebufferId) {
     }
 
     return (uintptr_t) instance->GetCurrentRenderingAPI()->GetFramebufferTextureId(framebufferId);
+}
+
+extern "C" int gfx_dx11_get_device_context(void** device, void** context) {
+    auto instance = Fast::mInstance.lock();
+
+    if ((instance == nullptr) || (device == nullptr) || (context == nullptr)) {
+        return 0;
+    }
+
+#ifdef ENABLE_DX11
+    auto* dx11 = dynamic_cast<Fast::GfxRenderingAPIDX11*>(instance->GetCurrentRenderingAPI());
+    if ((dx11 == nullptr) || (dx11->mDevice == nullptr) || (dx11->mContext == nullptr)) {
+        return 0;
+    }
+
+    *device = dx11->mDevice.Get();
+    *context = dx11->mContext.Get();
+    return 1;
+#else
+    *device = nullptr;
+    *context = nullptr;
+    return 0;
+#endif
+}
+
+extern "C" int gfx_dx11_copy_framebuffer_to_texture(int framebufferId, void* targetTexture, uint32_t* copiedWidth,
+                                                     uint32_t* copiedHeight) {
+    auto instance = Fast::mInstance.lock();
+
+    if ((instance == nullptr) || (targetTexture == nullptr)) {
+        return 0;
+    }
+
+#ifdef ENABLE_DX11
+    auto* dx11 = dynamic_cast<Fast::GfxRenderingAPIDX11*>(instance->GetCurrentRenderingAPI());
+    if (dx11 == nullptr) {
+        return 0;
+    }
+
+    return dx11->CopyFramebufferToTexture(framebufferId, static_cast<ID3D11Texture2D*>(targetTexture), copiedWidth,
+                                          copiedHeight)
+               ? 1
+               : 0;
+#else
+    return 0;
+#endif
 }
 
 extern "C" void gfx_texture_cache_clear() {

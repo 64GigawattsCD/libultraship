@@ -530,3 +530,6 @@ extern "C" void gfx_texture_cache_clear();
 extern "C" int gfx_create_framebuffer(uint32_t width, uint32_t height, uint32_t native_width, uint32_t native_height,
                                       uint8_t resize);
 extern "C" uintptr_t gfx_get_framebuffer_texture_id(int framebufferId);
+extern "C" int gfx_dx11_get_device_context(void** device, void** context);
+extern "C" int gfx_dx11_copy_framebuffer_to_texture(int framebufferId, void* targetTexture, uint32_t* copiedWidth,
+                                                     uint32_t* copiedHeight);
